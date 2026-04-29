@@ -723,37 +723,85 @@ if (-not $nodeMajorOk) {
         # safety net fallback to LTS if 22.x is gone entirely (Node 22
         # ages out of LTS April 2027 -- by then mac side wants the
         # next LTS major too).
+        # Layered resolution for the 22.x patchline winget should install:
+        #
+        #   1. Canonical pin ($nodeWinPreferred). What brew node@22 currently
+        #      resolves to on the mac side at this commit. Try first via a
+        #      cheap `winget show` existence check.
+        #   2. Latest 22.x in winget's local catalog (`winget show --versions`).
+        #      Self-heals when the canonical pin ages off.
+        #   3. Latest 22.x manifest in microsoft/winget-pkgs on GitHub.
+        #      Source of truth winget itself ingests from. Catches the case
+        #      where a hosted runner's winget catalog index is stale or
+        #      `winget show --versions` returns nothing parseable (which we
+        #      hit on macos-windows-2022 in iter1: `winget show` printed
+        #      msstore agreement noise then exited without a version list,
+        #      so the local-catalog branch came up empty and we silently
+        #      fell back to LTS, breaking parity).
+        #   4. Last-ditch: OpenJS.NodeJS.LTS alias. May install a different
+        #      major (currently 24.x) -- emit a loud WARNING so operators
+        #      notice the parity break.
+        #
+        # Bump $nodeWinPreferred in lockstep with whatever `brew info node@22`
+        # reports as the current bottle. When Node 22 ages out of LTS
+        # (April 2027), flip the major here AND on the macOS side.
         $nodeWinPreferred = "22.22.2"
-        $nodeWinVersion = $nodeWinPreferred
-        Write-Host "  Resolving Node 22.x version from winget catalog..." -ForegroundColor Gray
-        $catalogRaw = winget show OpenJS.NodeJS --versions 2>$null
-        $catalogVersions = @()
-        if ($catalogRaw) {
-            $catalogVersions = $catalogRaw |
-                ForEach-Object { $_.Trim() } |
-                Where-Object { $_ -match '^\d+\.\d+\.\d+$' }
+        $nodeWinVersion = $null
+        $nodeWinSource  = $null
+
+        # ---- Layer 1: canonical pin existence check
+        Write-Host "  Resolving Node 22.x..." -ForegroundColor Gray
+        $null = winget show --id OpenJS.NodeJS --version $nodeWinPreferred --accept-source-agreements --disable-interactivity 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            $nodeWinVersion = $nodeWinPreferred
+            $nodeWinSource  = "canonical pin (still in catalog)"
         }
-        $latest22 = $catalogVersions |
-            Where-Object { $_ -like '22.*' } |
-            Sort-Object -Property { [Version]$_ } -Descending |
-            Select-Object -First 1
-        if ($latest22) {
-            # Prefer the canonical pin if it's still in the catalog (matches
-            # whatever brew resolves to on the mac side at this commit).
-            # Otherwise take the latest 22.x available so the install
-            # succeeds rather than failing on an aged-off pin.
-            if ($catalogVersions -contains $nodeWinPreferred) {
-                Write-Host "  Using canonical pin Node $nodeWinVersion (still in catalog)." -ForegroundColor Gray
-            } else {
-                $nodeWinVersion = $latest22
-                Write-Host "  Canonical pin $nodeWinPreferred no longer in catalog; using latest 22.x: $nodeWinVersion" -ForegroundColor Yellow
+
+        # ---- Layer 2: parse winget local catalog --versions output
+        if (-not $nodeWinVersion) {
+            $catalogRaw = winget show --id OpenJS.NodeJS --versions --accept-source-agreements --disable-interactivity 2>$null
+            $catalogVersions = @()
+            if ($catalogRaw) {
+                $catalogVersions = $catalogRaw |
+                    ForEach-Object { $_.Trim() } |
+                    Where-Object { $_ -match '^\d+\.\d+\.\d+$' }
             }
+            $latest22 = $catalogVersions |
+                Where-Object { $_ -like '22.*' } |
+                Sort-Object -Property { [Version]$_ } -Descending |
+                Select-Object -First 1
+            if ($latest22) {
+                $nodeWinVersion = $latest22
+                $nodeWinSource  = "winget local catalog (canonical pin aged off; latest 22.x)"
+            }
+        }
+
+        # ---- Layer 3: microsoft/winget-pkgs GitHub manifests
+        if (-not $nodeWinVersion) {
+            try {
+                $apiUrl = "https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/o/OpenJS/NodeJS"
+                $resp = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing -TimeoutSec 30
+                $repo22 = $resp |
+                    Where-Object { $_.type -eq 'dir' -and $_.name -match '^22\.\d+\.\d+$' } |
+                    ForEach-Object { $_.name } |
+                    Sort-Object -Property { [Version]$_ } -Descending |
+                    Select-Object -First 1
+                if ($repo22) {
+                    $nodeWinVersion = $repo22
+                    $nodeWinSource  = "winget-pkgs GitHub manifests (winget local catalog returned no 22.x)"
+                }
+            } catch {
+                Write-Host "  Note: winget-pkgs GitHub query failed: $($_.Exception.Message)" -ForegroundColor Gray
+            }
+        }
+
+        # ---- Install (or LTS fallback if every layer came up empty)
+        if ($nodeWinVersion) {
+            Write-Host "  Installing Node $nodeWinVersion via winget [$nodeWinSource]" -ForegroundColor Gray
             Invoke-Step "Node.js" { winget install --id OpenJS.NodeJS --version $nodeWinVersion --accept-package-agreements --accept-source-agreements --disable-interactivity --silent } -SuppressPattern $wingetNoisePattern
         } else {
-            # No 22.x in catalog at all -- fall back to LTS alias. May
-            # install a different major; surface that loudly so a future
-            # operator notices the parity break.
-            Write-Host "  WARNING: no Node 22.x found in winget catalog; falling back to OpenJS.NodeJS.LTS alias (may install a different major)." -ForegroundColor Yellow
+            Write-Host "  WARNING: could not resolve any Node 22.x version via winget catalog or winget-pkgs repo;" -ForegroundColor Yellow
+            Write-Host "  WARNING: falling back to OpenJS.NodeJS.LTS alias (may install a different major; mac/win Node parity will break)." -ForegroundColor Yellow
             Invoke-Step "Node.js" { winget install --id OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements --disable-interactivity --silent } -SuppressPattern $wingetNoisePattern
         }
         Update-SessionPath
