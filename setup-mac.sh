@@ -949,27 +949,35 @@ else
                 fi
                 ;;
             [Ss]*)
-                cat <<'EOF'
-
-  +============================================================+
-  |                                                            |
-  |   You skipped Claude Code login.                           |
-  |                                                            |
-  |   That's fine - but Phase 2 (where Claude finishes setup)  |
-  |   needs an authenticated session, so we can't continue     |
-  |   right now.                                               |
-  |                                                            |
-  |   When you're ready:                                       |
-  |                                                            |
-  |     cd ~/Documents/elnora-starter-kit                      |
-  |     bash setup-mac.sh                                      |
-  |                                                            |
-  |   Re-running is safe - installs are skipped if already     |
-  |   present, and the script picks up at the auth step.       |
-  |                                                            |
-  +============================================================+
-
-EOF
+                # Use the live $PWD for the resume hint -- the user picked
+                # their workspace name in install.sh, so the folder is no
+                # longer guaranteed to be ~/Documents/elnora-starter-kit.
+                # setup-mac.sh has not `cd`'d anywhere by this point, so
+                # $PWD == kit dir.
+                kit_dir_display="$PWD"
+                # Collapse $HOME into ~ for readability.
+                case "$kit_dir_display" in
+                    "$HOME"/*) kit_dir_display="~${kit_dir_display#"$HOME"}" ;;
+                esac
+                echo ""
+                echo "  +============================================================+"
+                echo "  |                                                            |"
+                echo "  |   You skipped Claude Code login.                           |"
+                echo "  |                                                            |"
+                echo "  |   That's fine - but Phase 2 (where Claude finishes setup)  |"
+                echo "  |   needs an authenticated session, so we can't continue     |"
+                echo "  |   right now.                                               |"
+                echo "  |                                                            |"
+                echo "  |   When you're ready:                                       |"
+                echo "  |                                                            |"
+                echo "  |     cd $kit_dir_display"
+                echo "  |     bash setup-mac.sh                                      |"
+                echo "  |                                                            |"
+                echo "  |   Re-running is safe - installs are skipped if already     |"
+                echo "  |   present, and the script picks up at the auth step.       |"
+                echo "  |                                                            |"
+                echo "  +============================================================+"
+                echo ""
                 exit 0
                 ;;
             [Qq]*)

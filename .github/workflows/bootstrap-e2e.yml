@@ -63,6 +63,20 @@ jobs:
       # below — macos-14 ships without VS Code/Obsidian, so the brew casks
       # install on every run for nothing. Saves ~14s/run.
       ELNORA_SKIP_OPTIONAL_INSTALLS: "1"
+      # ---- Workspace name override -----------------------------------
+      # install.sh now prompts the user for a workspace name on first
+      # run (folder/repo name sync feature). In CI we have no TTY, so
+      # install.sh would otherwise fall through to its non-interactive
+      # default ("elnora-starter-kit"). Setting this env var exercises
+      # the same code path real users hit when they answer the prompt
+      # — folder gets created at $HOME/Documents/$ELNORA_WORKSPACE_NAME
+      # and every downstream step references that path.
+      #
+      # The value must match install.sh's validation regex
+      # ^[a-z0-9-]+$ (see CLAUDE.md > Naming Conventions). github
+      # context values used here (run_id, run_attempt) are numeric and
+      # runner-set, so they're regex-safe (no injection surface).
+      ELNORA_WORKSPACE_NAME: bootstrap-e2e-${{ github.run_id }}-${{ github.run_attempt }}-macos
     steps:
       - uses: actions/checkout@v6
 
@@ -86,11 +100,14 @@ jobs:
 
       - name: Pre-populate install target with checkout (skip GitHub tarball fetch)
         # install.sh's `if [ -d "$TARGET_DIR" ]` branch fires when the dir
-        # exists, skipping the tarball download. We use that path to test
-        # the rest of the chain (exec to setup-mac.sh → claude -p) on the
-        # current branch without depending on the tarball being current on
-        # main. The tarball-fetch path is manually verifiable by removing
-        # the dir before re-running, but isn't this workflow's concern.
+        # exists. We use that path to test the rest of the chain (exec
+        # to setup-mac.sh → claude -p) on the current branch without
+        # depending on the tarball being current on main.
+        #
+        # Path is now $HOME/Documents/$ELNORA_WORKSPACE_NAME (was
+        # hardcoded to ~/Documents/elnora-starter-kit). install.sh
+        # honors $ELNORA_WORKSPACE_NAME for $TARGET_DIR, so pre-populating
+        # the same path triggers the wipe-and-replace branch as expected.
         run: |
           mkdir -p "$HOME/Documents"
           rsync -a \
@@ -99,19 +116,19 @@ jobs:
             --exclude='.claude/settings.local.json' \
             --exclude='.claude/knowledge-base.local.md' \
             --exclude='handoff-transcript.jsonl' \
-            "$GITHUB_WORKSPACE/" "$HOME/Documents/elnora-starter-kit/"
+            "$GITHUB_WORKSPACE/" "$HOME/Documents/$ELNORA_WORKSPACE_NAME/"
           echo "--- contents of pre-populated dir ---"
           # find instead of `ls | head` so shellcheck SC2012 doesn't fire.
-          find "$HOME/Documents/elnora-starter-kit" -maxdepth 1 -mindepth 1 | head -20
+          find "$HOME/Documents/$ELNORA_WORKSPACE_NAME" -maxdepth 1 -mindepth 1 | head -20
 
       - name: Pre-stage integrity marker (skip-tarball branch)
         # install.sh only writes .elnora-starter-kit-marker on FRESH_EXTRACT
         # (when it downloaded the tarball itself). The pre-populate step
         # above triggers install.sh's "already exists" branch, so the marker
-        # never gets minted. setup-mac.sh's headless mode now hard-refuses
+        # never gets minted. setup-mac.sh's headless mode hard-refuses
         # without a marker, so we mint one here matching the rsync'd doc.
         run: |
-          KIT="$HOME/Documents/elnora-starter-kit"
+          KIT="$HOME/Documents/$ELNORA_WORKSPACE_NAME"
           sha=$(shasum -a 256 "$KIT/INSTALL_FOR_AGENTS.md" | awk '{print $1}')
           {
             echo "version: 1"
@@ -124,12 +141,9 @@ jobs:
         # The agent in headless mode is NOT allowed to write under .claude/
         # paths (sensitive-paths guard fires there even with bypassPermissions).
         # The harness writes the kb config the agent would otherwise have
-        # produced. Mirrors handoff-e2e.yml's matching step. The rsync above
-        # excludes .claude/knowledge-base.local.md (it's gitignored anyway),
-        # so the agent never sees one — its job is verify-only. Without this
-        # step, assert.sh's KB existence check fails 100% of the time.
+        # produced. Mirrors handoff-e2e.yml's matching step.
         run: |
-          KIT="$HOME/Documents/elnora-starter-kit"
+          KIT="$HOME/Documents/$ELNORA_WORKSPACE_NAME"
           mkdir -p "$KIT/.claude"
           {
             echo '---'
@@ -193,12 +207,31 @@ jobs:
           ELNORA_KIT_SOURCE_DIR: ${{ github.workspace }}
         run: |
           # Assertions run against the install target dir (where install.sh
-          # placed the kit), NOT the checkout. The checkout is just the
-          # source we rsync'd from.
+          # placed the kit at $HOME/Documents/$ELNORA_WORKSPACE_NAME), NOT
+          # the checkout. The checkout is just the source we rsync'd from.
           chmod +x "$GITHUB_WORKSPACE/tests/handoff/assert.sh"
           "$GITHUB_WORKSPACE/tests/handoff/assert.sh" \
-            "$HOME/Documents/elnora-starter-kit" \
+            "$HOME/Documents/$ELNORA_WORKSPACE_NAME" \
             "$ELNORA_HANDOFF_TRANSCRIPT"
+
+      - name: Verify folder name matches ELNORA_WORKSPACE_NAME
+        # Regression test for the install.sh prompt feature: the folder
+        # MUST end up at $HOME/Documents/$ELNORA_WORKSPACE_NAME, not at
+        # the legacy ~/Documents/elnora-starter-kit path. If install.sh
+        # ever stops honoring the env var, this catches it before users do.
+        if: always()
+        run: |
+          expected="$HOME/Documents/$ELNORA_WORKSPACE_NAME"
+          legacy="$HOME/Documents/elnora-starter-kit"
+          if [ ! -d "$expected" ]; then
+            echo "::error::expected install dir $expected does not exist"
+            exit 1
+          fi
+          if [ "$ELNORA_WORKSPACE_NAME" != "elnora-starter-kit" ] && [ -d "$legacy" ]; then
+            echo "::error::legacy path $legacy was created — install.sh did not honor ELNORA_WORKSPACE_NAME"
+            exit 1
+          fi
+          echo "OK: install dir is $expected (basename: $(basename "$expected"))"
 
       - name: Upload transcript as artifact
         if: always()
@@ -223,6 +256,14 @@ jobs:
       # windows-2022 runners ship without winget; skip optional installs that
       # need it. Same rationale as install-smoke-test.yml + handoff-e2e.yml.
       ELNORA_SKIP_OPTIONAL_INSTALLS: "1"
+      # ---- Workspace name override (Windows) -------------------------
+      # See macOS job above for the full rationale. install.ps1 honors
+      # $env:ELNORA_WORKSPACE_NAME for the install target dir; setting
+      # it here exercises the prompt path that real users hit. Value
+      # must match install.ps1's validation regex ^[a-z0-9-]+$.
+      # github.run_id and github.run_attempt are runner-set numbers,
+      # safe to interpolate here (no command-injection surface).
+      ELNORA_WORKSPACE_NAME: bootstrap-e2e-${{ github.run_id }}-${{ github.run_attempt }}-windows
     steps:
       - uses: actions/checkout@v6
 
@@ -250,7 +291,11 @@ jobs:
       - name: Pre-populate install target with checkout (skip GitHub zip fetch)
         shell: pwsh
         run: |
-          $target = Join-Path $env:USERPROFILE "Documents\elnora-starter-kit"
+          # Path is now Documents\$env:ELNORA_WORKSPACE_NAME (was hardcoded
+          # to elnora-starter-kit). install.ps1 honors the env var for
+          # $TargetDir, so pre-populating the same path triggers the
+          # wipe-and-replace branch as expected.
+          $target = Join-Path $env:USERPROFILE "Documents\$env:ELNORA_WORKSPACE_NAME"
           New-Item -ItemType Directory -Force -Path (Split-Path $target -Parent) | Out-Null
           # robocopy /MIR mirrors the source dir. Exit codes 0..7 are success
           # (copies, mismatches, extras); 8+ is real failure. /XD/.XF exclude
@@ -265,12 +310,11 @@ jobs:
         # install.ps1 only writes .elnora-starter-kit-marker on FreshExtract
         # (when it downloaded the zip itself). The pre-populate step above
         # triggers install.ps1's "already exists" branch, so the marker
-        # never gets minted. setup-windows.ps1's headless mode now
-        # hard-refuses without a marker, so we mint one matching the
-        # robocopy'd doc.
+        # never gets minted. setup-windows.ps1's headless mode hard-refuses
+        # without a marker, so we mint one matching the robocopy'd doc.
         shell: pwsh
         run: |
-          $kit = Join-Path $env:USERPROFILE "Documents\elnora-starter-kit"
+          $kit = Join-Path $env:USERPROFILE "Documents\$env:ELNORA_WORKSPACE_NAME"
           $docPath = Join-Path $kit "INSTALL_FOR_AGENTS.md"
           $hash = (Get-FileHash -Path $docPath -Algorithm SHA256).Hash.ToLowerInvariant()
           $now = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
@@ -281,12 +325,9 @@ jobs:
 
       - name: Pre-stage .claude/knowledge-base.local.md (no agent writes to .claude/)
         # See matching macOS step + handoff-e2e.yml for the full rationale.
-        # Headless agent is blocked from writing under .claude/, so the
-        # harness places the kb config it would have produced. Without this
-        # step, assert.ps1's KB existence check fails 100% of the time.
         shell: pwsh
         run: |
-          $kit = Join-Path $env:USERPROFILE "Documents\elnora-starter-kit"
+          $kit = Join-Path $env:USERPROFILE "Documents\$env:ELNORA_WORKSPACE_NAME"
           $claudeDir = Join-Path $kit ".claude"
           New-Item -ItemType Directory -Force -Path $claudeDir | Out-Null
           # Forward slashes in vault_path are intentional — the kb config
@@ -345,8 +386,28 @@ jobs:
           # not user input.
           ELNORA_KIT_SOURCE_DIR: ${{ github.workspace }}
         run: |
-          $target = Join-Path $env:USERPROFILE "Documents\elnora-starter-kit"
+          $target = Join-Path $env:USERPROFILE "Documents\$env:ELNORA_WORKSPACE_NAME"
           & "$env:GITHUB_WORKSPACE\tests\handoff\assert.ps1" -RepoDir $target -Transcript $env:ELNORA_HANDOFF_TRANSCRIPT
+
+      - name: Verify folder name matches ELNORA_WORKSPACE_NAME
+        # Regression test for the install.ps1 prompt feature: the folder
+        # MUST end up at Documents\$env:ELNORA_WORKSPACE_NAME, not at
+        # the legacy elnora-starter-kit path. If install.ps1 ever stops
+        # honoring the env var, this catches it before users do.
+        if: always()
+        shell: pwsh
+        run: |
+          $expected = Join-Path $env:USERPROFILE "Documents\$env:ELNORA_WORKSPACE_NAME"
+          $legacy = Join-Path $env:USERPROFILE "Documents\elnora-starter-kit"
+          if (-not (Test-Path $expected)) {
+            Write-Host "::error::expected install dir $expected does not exist"
+            exit 1
+          }
+          if ($env:ELNORA_WORKSPACE_NAME -ne "elnora-starter-kit" -and (Test-Path $legacy)) {
+            Write-Host "::error::legacy path $legacy was created — install.ps1 did not honor ELNORA_WORKSPACE_NAME"
+            exit 1
+          }
+          Write-Host "OK: install dir is $expected (basename: $(Split-Path $expected -Leaf))"
 
       - name: Upload transcript as artifact
         if: always()

@@ -114,7 +114,7 @@ mode, follow these adjustments:
       fully functional for repo creation. With `GH_TOKEN` exported, `gh`
       itself is authenticated immediately. The follow-up `gh auth
       setup-git` wires git to use gh's credential helper for HTTPS URLs.
-      Skip it and step 6c.5's `git fetch origin` will fail with "could
+      Skip it and step 6c.6's `git fetch origin` will fail with "could
       not read Username for https://github.com" — `GH_TOKEN` alone
       doesn't configure git's credential.helper on a fresh shell, only
       gh's own HTTP layer.
@@ -124,26 +124,34 @@ mode, follow these adjustments:
       (`https://x-access-token:$TOKEN@github.com/...`) and do **not**
       add `--no-thin` or other workaround flags to `git push`. If a
       push fails, surface the actual error rather than papering over it.
-    - **6c.3 (repo name):** do NOT prompt — use the value of
-      `$ELNORA_HANDOFF_REPO_NAME` (CI sets this to
-      `elnora-handoff-ci-<github_run_id>-<attempt>-<os>`, collision-free
-      across reruns) as the chosen name. Validate it matches
-      `[A-Za-z0-9._-]+` like the doc says, but skip the user conversation.
-      The name is unique per run — do **not** pre-emptively
-      `gh repo delete` before creating; just run `gh repo create` and let
-      the create succeed on first try.
-    - **6c.4 (create+push):** run `gh repo create "$ELNORA_HANDOFF_REPO_NAME"
+    - **6c.1 (resolve name):** do NOT read from `basename "$PWD"` and do
+      NOT prompt. Set `WORKSPACE_NAME="$ELNORA_HANDOFF_REPO_NAME"` (CI
+      sets this to `elnora-handoff-ci-<github_run_id>-<attempt>-<os>`,
+      collision-free across reruns). Validate it matches
+      `[A-Za-z0-9._-]+` like the doc says, but skip the user
+      conversation.
+    - **6c.2 (availability check + collision recovery):** SKIP. The
+      CI repo name is unique per run by construction, so the
+      availability check is a guaranteed pass and the collision
+      recovery (write resume marker, ask user to close+rename+reopen)
+      is unreachable. The local folder name in CI does NOT need to
+      match `WORKSPACE_NAME` — the test fixture asserts on the
+      GitHub repo name only.
+    - **6c.3+6c.4 (init + commit):** run as written.
+    - **6c.5 (create+push):** run `gh repo create "$WORKSPACE_NAME"
       --private --source=. --push` and run all four gates as written
       (exit 0, origin URL, no `elnora-upstream`, visibility = `"PRIVATE"`).
-    - **6c.5 (fetch verify):** run as written.
+      Do **not** pre-emptively `gh repo delete` before creating; the
+      unique-per-run name means the create succeeds on first try.
+    - **6c.6 (fetch verify):** run as written.
     - **6d (show user / browser):** skip — there is no user. Run
-      `gh repo view "$ELNORA_HANDOFF_REPO_NAME" --json url,visibility,owner`
+      `gh repo view "$WORKSPACE_NAME" --json url,visibility,owner`
       so the result lands in the transcript for debugging, but do NOT
       run `gh repo view --web`.
   - **If `ELNORA_HANDOFF_GH_TOKEN` is unset** (local headless dev with
     no PAT available), do step 6a (verify `gh` is installed) and
-    step 6c.1+6c.2 (init + commit) only. Skip 6b, 6c.3+6c.4+6c.5, and
-    6d.
+    step 6c.3+6c.4 (init + commit) only. Skip 6b, 6c.1+6c.2+6c.5+6c.6,
+    and 6d.
 - **Step 9 (Chrome DevTools MCP):** skip — there is no user, no
   human-driven Chrome session to attach to, and the headless runner
   doesn't have Chrome installed.
@@ -208,6 +216,80 @@ mode, follow these adjustments:
 > Phase 1 failed — useless context for the happy path. Only consult it
 > if you find a `FAILED:` marker in step 1 below or if a step here
 > errors out. Reading it upfront wastes ~5 KB of cache for nothing.
+
+### 0. Resume detection — check for `.elnora-handoff-resume.json` first
+
+Before doing anything else in Phase 2, check whether a previous session
+asked us to resume. This marker is written by step 6c.2's collision
+recovery flow when a GitHub-name collision forces a folder rename.
+
+```
+test -f .elnora-handoff-resume.json && echo "RESUME" || echo "FRESH"
+```
+
+(On Windows: `if (Test-Path .elnora-handoff-resume.json) { 'RESUME' } else { 'FRESH' }`.)
+
+- **`FRESH`** (the marker doesn't exist) → this is a normal Phase 2
+  run. Proceed to step 1 below.
+- **`RESUME`** → a previous session collided on GitHub-name and asked
+  us to pick up here. Do this:
+
+  1. Read the marker:
+     ```
+     cat .elnora-handoff-resume.json
+     ```
+     Confirm fields are present: `next_step`, `workspace_name`,
+     `previous_workspace_name`, `gh_user`. If any field is missing or
+     the JSON is malformed, surface that to the user, delete the
+     marker (`rm .elnora-handoff-resume.json`), and start Phase 2 from
+     step 1 — better to redo work than to follow a half-corrupt marker.
+
+  2. Confirm we are in the renamed folder, not the old one:
+     ```
+     [ "$(basename "$PWD")" = "<workspace_name from marker>" ]
+     ```
+     If we are still in the old folder (`basename "$PWD"` ==
+     `previous_workspace_name`), the user closed and reopened Claude
+     without renaming. Read them the close-rename-reopen sequence again
+     (it's in step 6c.2's collision recovery flow) and stop work. Do
+     not retry from this session.
+
+  3. Tell the user, in plain language:
+
+     > "Found a resume marker — picking up where we left off. You're
+     > in `<workspace_name>` now (was `<previous_workspace_name>`).
+     > I'll skip ahead to creating your GitHub repo with the new
+     > name."
+
+  4. Verify the prerequisites the prior session already established:
+     - `gh auth status` exits 0 — we did `gh auth login` before the
+       collision was detected, so auth should still be live. If it
+       isn't (cache expired, user logged out between sessions),
+       re-run step 6b to re-authenticate.
+     - `gh api user --jq .login` matches the marker's `gh_user`. If
+       not (user switched GitHub accounts between sessions), surface
+       the mismatch, delete the marker, and start fresh from step 1.
+
+  5. Set the working variables and **jump to the marker's `next_step`**:
+     ```
+     WORKSPACE_NAME="<workspace_name from marker>"
+     GH_USER="<gh_user from marker>"
+     ```
+     For `next_step="6c.5"` (the only value currently produced) jump
+     to step 6c.3 (init), 6c.4 (commit), 6c.5 (gh repo create), 6c.6
+     (fetch verify) — i.e. do steps 6c.3 onward as written, with
+     `WORKSPACE_NAME` already populated. Skip step 6c.1 (it's the
+     "read name from $PWD" prep we no longer need) and step 6c.2 (the
+     availability check we already passed before the rename).
+
+  6. **After step 6 completes successfully, delete the marker**:
+     ```
+     rm .elnora-handoff-resume.json
+     ```
+     This must happen before the step 11 cleanup commit so the marker
+     doesn't end up in git history.
+
+  Steps 7–11 then run as normal.
 
 ### 1. Read the install log
 
@@ -366,17 +448,165 @@ user to confirm "done."
 passes:
 
 - `gh auth status` exits 0 and contains "Logged in to github.com".
-- `gh api user --jq .login` returns a non-empty username. Capture this as
-  `<gh-username>` for 6c.
+- `gh api user --jq .login` returns a non-empty username. Step 6c.2
+  captures it as `$GH_USER` for the availability check and remote URL.
 - `gh auth status` mentions "Git operations" or `git_protocol: https` —
   i.e. git is wired through gh's credential helper, not stale ssh.
 
 If any gate fails: tell the user what went wrong, ask them to re-run
 `gh auth login`, re-verify. Do not proceed with broken auth.
 
-#### 6c. Initialize, commit, create the GitHub repo, and push
+#### 6c. Resolve workspace name, ensure GitHub availability, then init+commit+push
 
-1. Initialize the local repo on `main`. If `.git/` already exists (e.g.
+The user picked their workspace name back in `install.sh` / `install.ps1`,
+so the local folder is already named for them (e.g. `carmen-agents` rather
+than the generic `elnora-starter-kit`). The invariant we maintain through
+the rest of this step: **the local folder name and the GitHub repo name
+are always identical.** If we ever have to change one, we change both, in
+the same step, before any git history exists.
+
+1. Read the workspace name from the current folder. This is the source of
+   truth — do NOT re-prompt the user just to pick a name they already chose:
+
+   ```
+   WORKSPACE_NAME="$(basename "$PWD")"
+   echo "Workspace name: $WORKSPACE_NAME"
+   ```
+
+   **Gate**: `WORKSPACE_NAME` is non-empty and matches `[A-Za-z0-9._-]+`.
+   If it doesn't match (the user manually renamed the folder to something
+   illegal), tell them the constraint and ask them to rename it themselves
+   before continuing.
+
+   Tell the user (in plain language):
+
+   > "I'll create your GitHub repo with the same name as your local
+   > folder (`<WORKSPACE_NAME>`). That way the two stay in sync — one
+   > name, one workspace. It'll be **private**."
+
+   **Do not ask about visibility.** Always private. If the user requests
+   public, explain: "Let's keep this one private — it can hold credentials,
+   vault paths, and personal notes safely. If you want a public repo later
+   for sharing a sample protocol, create a separate one for that."
+
+2. **Check availability on GitHub BEFORE we touch git locally.** If
+   the user already has a repo with this name on their GitHub account,
+   we cannot just `gh repo create` — and we cannot rename the local
+   folder in-session either. Claude Code, the MCP servers in
+   `.mcp.json` (Elnora, Chrome DevTools), the plugins under
+   `.claude/plugins/`, the hook scripts under `.claude/hooks/`, and any
+   in-flight tool processes are all alive INSIDE this directory. A
+   live `mv` would (a) silently break MCP cwds and plugin paths,
+   (b) outright fail on Windows where the OS holds a directory handle
+   for the running process. Either way, "everything dies."
+
+   Instead we **write a resume marker, hand the user a clean
+   close-rename-reopen sequence, and stop work cleanly**. When the
+   user reopens Claude in the renamed folder, Step 0 (top of this
+   doc) detects the marker and jumps straight to step 6c.5 with the
+   new name already verified.
+
+   ```
+   GH_USER="$(gh api user --jq .login)"
+   if gh repo view "$GH_USER/$WORKSPACE_NAME" --json name >/dev/null 2>&1; then
+       NAME_TAKEN=true
+   else
+       NAME_TAKEN=false
+   fi
+   ```
+
+   - **`NAME_TAKEN=false`** → name is available, proceed to step 3.
+   - **`NAME_TAKEN=true`** → run the collision recovery flow below.
+     Do **not** attempt `mv` from inside the running session.
+
+   #### Collision recovery flow
+
+   Tell the user, in plain language:
+
+   > "You already have a GitHub repo called **`<WORKSPACE_NAME>`** on
+   > your account. Pick a different name — I'll write down where we
+   > are, then we both step out for ~30 seconds while you rename the
+   > folder, and we pick right back up. (I can't rename it for you
+   > without breaking my own session — explanation in a moment.)"
+
+   Loop until you have an available name:
+   1. Ask the user for a new name. Validate it matches `^[a-z0-9-]+$`
+      (project naming convention — see `CLAUDE.md` > Naming
+      Conventions) and is non-empty.
+   2. Re-check availability:
+      ```
+      if gh repo view "$GH_USER/$NEW_NAME" --json name >/dev/null 2>&1; then
+          # still taken, ask for another
+      fi
+      ```
+
+   Once you have a free name, **write the resume marker** from the
+   still-original folder. The marker travels with the working tree
+   when the user renames the folder:
+
+   ```
+   OLD_NAME="$WORKSPACE_NAME"
+   cat > .elnora-handoff-resume.json <<EOF
+   {
+     "version": 1,
+     "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+     "next_step": "6c.5",
+     "workspace_name": "$NEW_NAME",
+     "previous_workspace_name": "$OLD_NAME",
+     "gh_user": "$GH_USER"
+   }
+   EOF
+   ```
+
+   **Gate**: `cat .elnora-handoff-resume.json` shows the JSON above
+   with real (non-empty) values for every field, and `git status
+   --porcelain .elnora-handoff-resume.json` shows it as untracked
+   (we have not run `git init` yet).
+
+   Then read the user the close-rename-reopen sequence verbatim, do
+   not paraphrase:
+
+   > "Marker written. Here's what to do next, in order:
+   >
+   > **1. Close this Claude Code session** — Ctrl+C twice, or just
+   > close this terminal window. (I'm exiting cleanly; nothing to
+   > save.)
+   >
+   > **2. Rename the folder** in Finder (macOS) or File Explorer
+   > (Windows):
+   >   - From: `~/Documents/<OLD_NAME>`
+   >   - To:   `~/Documents/<NEW_NAME>`
+   >
+   > Or in a fresh terminal:
+   >   - macOS: `mv ~/Documents/<OLD_NAME> ~/Documents/<NEW_NAME>`
+   >   - Windows: `Move-Item $env:USERPROFILE\\Documents\\<OLD_NAME> $env:USERPROFILE\\Documents\\<NEW_NAME>`
+   >
+   > **3. Open a new terminal in the renamed folder and re-run setup**:
+   >   - macOS: `cd ~/Documents/<NEW_NAME> && bash setup-mac.sh`
+   >   - Windows: `cd $env:USERPROFILE\\Documents\\<NEW_NAME>; .\\setup-windows.ps1`
+   >
+   > setup-mac.sh / setup-windows.ps1 is safe to re-run — every install
+   > step short-circuits when the tool is already present, and at the
+   > end it re-launches me with the same handoff prompt I came in on.
+   > I'll see the marker file, know exactly where we left off, and
+   > pick up at step 6c.5 (creating the GitHub repo with the new
+   > name). No work lost."
+
+   After printing those instructions, **stop work cleanly** — do
+   not `git init`, do not `gh repo create`, do not try anything else
+   in this session. The user is about to close it. Print one closing
+   line ("Closing now — see you in the renamed folder") and finish
+   your turn. The handoff resumes on the next session via Step 0.
+
+   > **Headless mode (`ELNORA_HANDOFF_MODE=headless`)**: skip the
+   > availability check and the entire collision recovery flow. The
+   > CI repo name (`$ELNORA_HANDOFF_REPO_NAME`) is collision-free per
+   > run by construction. Set
+   > `WORKSPACE_NAME="$ELNORA_HANDOFF_REPO_NAME"` and proceed straight
+   > to step 3. The resume flow is exercised by a dedicated
+   > `handoff-resume-e2e` job in CI — not by this branch.
+
+3. Initialize the local repo on `main`. If `.git/` already exists (e.g.
    the user manually `git clone`'d the kit instead of using the
    one-liner), strip any pre-existing remotes — this is going to be
    *their* repo, not a fork of ours:
@@ -390,7 +620,7 @@ If any gate fails: tell the user what went wrong, ask them to re-run
    **Gate**: `.git/` exists; `git symbolic-ref HEAD` returns
    `refs/heads/main`; `git remote` prints nothing.
 
-2. Stage and commit everything:
+4. Stage and commit everything:
 
    ```
    git add .
@@ -400,25 +630,10 @@ If any gate fails: tell the user what went wrong, ask them to re-run
    **Gate**: `git log --oneline | wc -l` returns `1`; `git status
    --porcelain` is empty.
 
-3. Suggest a repo name. Default = `<gh-username>-agents` (e.g.
-   `carmen-agents`, `alex-agents`) — generic, personal, communicates "this
-   is your agent workspace." Tell the user:
-
-   > "What do you want to name your repo on GitHub? I suggest
-   > **`<gh-username>-agents`** — generic, yours, easy to remember. If
-   > you'd like something else, tell me. It will be **private** either
-   > way."
-
-   Accept any non-empty input matching `[A-Za-z0-9._-]+`. **Do not ask
-   about visibility.** Always private. If the user requests public,
-   explain: "Let's keep this one private — it can hold credentials, vault
-   paths, and personal notes safely. If you want a public repo later for
-   sharing a sample protocol, create a separate one for that."
-
-4. Create the GitHub repo and push in one shot:
+5. Create the GitHub repo and push in one shot, using the verified name:
 
    ```
-   gh repo create <chosen-name> --private --source=. --push
+   gh repo create "$WORKSPACE_NAME" --private --source=. --push
    ```
 
    This creates the repo, wires it as `origin`, and pushes `main` —
@@ -427,19 +642,23 @@ If any gate fails: tell the user what went wrong, ask them to re-run
    **Gate** — run ALL of these:
    - `gh repo create` exit code is 0.
    - `git remote -v` shows `origin` pointing at
-     `https://github.com/<gh-username>/<chosen-name>.git` for both fetch
+     `https://github.com/$GH_USER/$WORKSPACE_NAME.git` for both fetch
      and push.
    - `git remote -v` shows NO `elnora-upstream` (sanity check).
-   - `gh repo view <chosen-name> --json visibility --jq .visibility`
+   - `gh repo view "$WORKSPACE_NAME" --json visibility --jq .visibility`
      returns `"PRIVATE"`.
 
-   **If `gh repo create` fails with "name already exists on this account":**
-   surface the error verbatim, suggest alternatives
-   (`<gh-username>-agents-2`, `<gh-username>-elnora`, `<gh-username>-lab`),
-   ask the user to pick or invent one, retry from this substep. Do NOT
+   **If `gh repo create` fails with "name already exists on this account"
+   despite the step-2 check passing** (rare TOCTOU race — user created a
+   repo with that name in another tab between steps 2 and 5): treat it
+   exactly like a `NAME_TAKEN=true` collision. Loop back to step 2 with
+   the failure surfaced verbatim, get a new name, rename the local
+   folder, retry. The `git init`/`git commit` from steps 3-4 already ran
+   on the now-renamed folder — that's fine; the commit travels with the
+   tree. Just retry `gh repo create` with the new name. Do NOT
    pre-emptively delete or rename anything on GitHub.
 
-5. Confirm the push landed on the default branch (the "merged" check):
+6. Confirm the push landed on the default branch (the "merged" check):
 
    ```
    git fetch origin
@@ -453,7 +672,7 @@ If any gate fails: tell the user what went wrong, ask them to re-run
 #### 6d. Show the user what they just got
 
 ```
-gh repo view <chosen-name>
+gh repo view $WORKSPACE_NAME
 ```
 
 (Without `--web` so the output prints to the terminal — you need to see and
@@ -461,7 +680,9 @@ report it.)
 
 Tell the user:
 
-- "Your repo is live at `https://github.com/<gh-username>/<chosen-name>`."
+- "Your repo is live at `https://github.com/$GH_USER/$WORKSPACE_NAME`."
+- "Your local folder is `$PWD` — same name as the GitHub repo so the
+  two stay in sync."
 - "It's private — only you can see it."
 - "Everything we set up is in there: `CLAUDE.md`, the install scripts, the
   `.claude/` folder, docs, MCP config, templates. Internal CI and test
@@ -473,10 +694,10 @@ Tell the user:
 Offer to open it in the browser:
 
 ```
-gh repo view <chosen-name> --web
+gh repo view $WORKSPACE_NAME --web
 ```
 
-The 6c.4 + 6c.5 gates already verified `origin`, visibility, and that
+The 6c.5 + 6c.6 gates already verified `origin`, visibility, and that
 `HEAD` matches `origin/main`. No need to re-run `git remote -v` here —
 the `gh repo view` call above is the only check left for step 6.
 
@@ -588,14 +809,48 @@ Do not skip the question. Most users do not know this exists, and they
 cannot opt in if you never offer.
 
 There is nothing for you to install or configure on the agent side —
-the repo already ships everything pre-wired. Your only job is to
-(a) ask the user, (b) walk them through the Chrome side if they say
-yes, and (c) verify the connection works. Full agent-side reference:
+the repo already ships everything pre-wired. Your job is to
+(a) silently check whether Chrome is installed, (b) explain the value
+and ask the user (offering to install Chrome if they don't have it),
+(c) install or update Chrome if they want it and need it, (d) walk
+them through enabling **remote debugging** in Chrome — this is the
+load-bearing step older versions of this doc glossed over — and
+(e) verify the connection works. Full agent-side reference:
 `docs/chrome-devtools-mcp-setup.md`. Do **not** paste internal config
-file paths or names into the chat — keep your spoken-to-the-user text
-in plain language.
+file paths or names into the chat — keep your spoken-to-the-user
+text in plain language.
 
-#### 9a. Ask the user — read this verbatim, do not paraphrase loosely
+#### 9a. Pre-flight: is Chrome installed?
+
+Before pitching anything, silently check whether Chrome is on the
+machine. The result determines how you frame the conversation in 9b.
+
+- **macOS:**
+
+  ```
+  /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --version
+  ```
+
+- **Windows (PowerShell):**
+
+  ```
+  (Get-Item "C:\Program Files\Google\Chrome\Application\chrome.exe").VersionInfo.ProductVersion
+  ```
+
+  (Or the `(x86)` path if 32-bit.)
+
+Branch on the result and remember it for 9b/9c:
+
+- **Chrome installed, version >= 144** → 9b path A.
+- **Chrome installed, version < 144** → 9b path A, but flag that
+  they'll need to update before we can connect.
+- **Chrome not installed** (very common on Mac — most users default
+  to Safari) → 9b path B.
+
+#### 9b. Ask the user — read the relevant version verbatim
+
+**Path A — Chrome already installed.** Read this verbatim, do not
+paraphrase loosely:
 
 > "There's one more optional thing I can set up. It connects me to
 > your real Chrome browser — the same Chrome you already use, with
@@ -615,81 +870,113 @@ in plain language.
 > - It runs locally between this terminal and your Chrome. The
 >   underlying tool is maintained by Google and does send anonymous
 >   usage stats by default — we can turn that off if you'd like.
-> - Because I'd be acting through *your* logged-in browser, you should
->   be the one to decide where I'm allowed to drive. Tell me which
->   sites or actions you want me to confirm with you before clicking
->   — payments, sending messages, anything irreversible — and I'll
->   keep that in mind for this session.
 > - It's totally optional. Skipping it doesn't break anything — you
 >   can come back later and say 'set up the Chrome browser tools' any
 >   time.
 >
 > Want me to set it up now?"
 
-- **No / not now** → tell them: "No problem. Whenever you want this
-  later, just say 'set up the Chrome browser tools' and I'll walk you
-  through it." Skip to step 10.
-- **Yes** → continue to 9b.
+**Path B — Chrome not installed.** Read this verbatim. The key
+difference is that you're explicitly offering to install Chrome and
+explaining *why* the user might want it — most users on Mac default
+to Safari and have no idea this is even an option:
 
-#### 9b. Pre-flight: confirm Chrome is installed and is version 144+
+> "There's one more optional thing I can set up — but you don't have
+> Chrome on this machine yet. (That's normal — most folks on Mac use
+> Safari by default.) The setup connects me to a real Chrome browser
+> — your own Chrome, with logins and cookies intact — so I can:
+> - See and switch between your open tabs.
+> - Open new pages, click buttons, fill forms, and upload files
+>   inside sessions you're already signed into (Linear, Gmail,
+>   GitHub, your lab's portal, etc.). No re-login needed.
+> - Read the page content, run JavaScript on a page, and inspect
+>   network requests and console logs — useful when you want me to
+>   debug a web app or grab data off a page you're looking at.
+> - Run Lighthouse / performance audits on any URL.
+>
+> If you'd like to use this, I can install Chrome for you now and
+> wire it up. It runs locally, and it's totally optional — skipping
+> doesn't break anything else.
+>
+> Want me to install Chrome and set it up?"
 
-`--autoConnect` requires Chrome 144 or newer. Check what they have:
+- **No / not now** (either path) → tell them: "No problem. Whenever
+  you want this later, just say 'set up the Chrome browser tools'
+  and I'll walk you through it." Skip to step 10.
+- **Yes** → continue to 9c.
 
-- **macOS:**
+#### 9c. Install or update Chrome if needed
 
-  ```
-  /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --version
-  ```
+Branch on what 9a turned up:
 
-- **Windows (PowerShell):**
-
-  ```
-  (Get-Item "C:\Program Files\Google\Chrome\Application\chrome.exe").VersionInfo.ProductVersion
-  ```
-
-  (Or the `(x86)` path if 32-bit.)
-
-Branch on the result:
-
-- **Chrome not installed.** Tell the user plainly: "I don't see
-  Chrome on your machine. Want me to install it?"
-  - macOS: `brew install --cask google-chrome`
-  - Windows: `winget install --id Google.Chrome` (or have them
-    download from `https://www.google.com/chrome/`)
-  - After install, re-run the version check.
-- **Chrome version < 144.** Tell the user: "Your Chrome is on
+- **Chrome already installed at v144+** → skip this step, jump to 9d.
+- **Chrome installed but < 144** → tell the user: "Your Chrome is on
   version `<X>`. I need 144 or newer for this to work. The fastest
   way to update is: open Chrome → click the three-dot menu → Help →
   About Google Chrome. Chrome will check for updates and apply them.
-  Let me know when it's done." Wait for confirmation, re-check version.
-- **Chrome version >= 144.** Proceed to 9c.
+  Let me know when it's done." Wait for confirmation, re-check
+  version, then go to 9d.
+- **Chrome not installed** → install it now:
+  - macOS: `brew install --cask google-chrome`
+  - Windows: `winget install --id Google.Chrome` (or have them
+    download from `https://www.google.com/chrome/`)
 
-#### 9c. Walk the user through the Chrome side
+  After install, re-run the version check from 9a. Confirm
+  >= 144, then continue to 9d.
 
-Tell the user, in plain language and in this order:
+#### 9d. Enable remote debugging in Chrome — the load-bearing step
 
-1. **"Open Chrome normally — just click the icon. Do NOT use any
-    special command-line flags, and do NOT launch it from the
-    terminal with `--remote-debugging-port` or anything like that.
-    A regular open is exactly what we need."**
-2. **"Sign into the sites you want me to be able to act on (Linear,
-    Gmail, GitHub, your lab portal, whatever). I'll use whatever
-    sessions are already there — I don't see your passwords, just
-    the cookies your browser already has."**
-3. **"Leave Chrome running. Don't quit it. Switch back to me here
-    when you're ready."**
+**This is the step older versions of this doc glossed over.** Chrome
+144+ does **not** automatically expose its local debugging endpoint
+to the MCP — the user has to opt in once via Chrome's UI. Until that
+toggle is on, every `mcp__chrome-devtools__*` call fails with
+"no browser found" no matter how clean the rest of the setup is.
+Skipping this step is the most common reason this whole flow appears
+broken in the wild.
 
-Wait for the user to confirm Chrome is open and they're signed into
-what they want.
+Walk the user through it, in this order — do not skip ahead:
 
-> Note: there is **no Chrome flag, extension, or `chrome://` setting**
-> to enable. Chrome 144+ exposes the local debugging endpoint to the
-> MCP automatically as long as it was launched normally. If you find
-> yourself instructing the user to flip a `chrome://` flag, stop —
-> that's the wrong path and usually means Chrome is on the wrong
-> version or was launched with a custom debugging port. See 9e.
+1. **Open the remote-debugging page in Chrome for them** so they
+   don't have to type the URL. This is the very first thing you do
+   in 9d — before asking them to sign into anything, before
+   verifying the MCP, before anything else:
+   - macOS: `open -a "Google Chrome" "chrome://inspect/#remote-debugging"`
+   - Windows: `Start-Process chrome "chrome://inspect/#remote-debugging"`
 
-#### 9d. Verify the connection — three gates, all must pass
+   If launching from the command line doesn't bring Chrome to the
+   front, tell the user: "Open Chrome. In the address bar paste
+   `chrome://inspect/#remote-debugging` and press Enter."
+
+2. Tell the user, plainly:
+
+   > "On the page that just opened, tick the **Discover network
+   > targets** checkbox (or follow the on-page prompt to enable
+   > remote debugging) and confirm. That's the one-time setting
+   > that lets me attach to your browser."
+
+3. Once they confirm the box is ticked, tell them:
+
+   > "Now sign into any sites you want me to be able to act on —
+   > Linear, Gmail, GitHub, your lab portal, whatever. I'll use
+   > whatever sessions are already there; I don't see your
+   > passwords, just the cookies your browser already has. Leave
+   > Chrome running — don't quit it — and switch back to me here
+   > when you're ready."
+
+Wait for the user to explicitly confirm both that the checkbox is
+ticked and that Chrome is open with the sites they want signed in.
+Do **not** proceed to 9e until they confirm — verifying the
+connection before remote debugging is enabled wastes their time on
+a guaranteed-failing gate.
+
+> Note: there is **no other Chrome flag, extension, or `chrome://`
+> setting** to enable beyond the remote-debugging toggle above. If
+> you find yourself instructing the user to launch Chrome with
+> `--remote-debugging-port` or flip a different `chrome://flag`,
+> stop — that's the wrong path and usually means Chrome is on the
+> wrong version. See 9f.
+
+#### 9e. Verify the connection — three gates, all must pass
 
 Run these in order. After each, report the result to the user in one
 short sentence so they can see it working.
@@ -709,7 +996,7 @@ short sentence so they can see it working.
    **Gate**: the result lists at least one tab with the URL of
    something the user actually has open. Read one of the URLs back to
    them: "I can see you have `<url>` open — that's your real
-   Chrome." If the result is empty, jump to 9e.
+   Chrome." If the result is empty, jump to 9f.
 
 3. **A snapshot of the focused tab works.** Call
    `mcp__chrome-devtools__take_snapshot`. Before doing this, glance
@@ -722,13 +1009,13 @@ short sentence so they can see it working.
 
    **Gate**: it returns an accessibility-tree snapshot (text content,
    headings, buttons with `uid`s). If it errors or returns garbled
-   output, jump to 9e.
+   output, jump to 9f.
 
 If all three gates pass, tell the user: "Confirmed — I'm attached to
 your real Chrome. From now on, when you ask me to do something on the
 web, I can drive your browser instead of opening a separate one."
 
-#### 9e. Troubleshoot if a gate fails
+#### 9f. Troubleshoot if a gate fails
 
 Match the symptom and act on it. Do **not** loop on the same fix more
 than twice — if it's still broken after two tries, tell the user
@@ -737,19 +1024,20 @@ you can re-try later" and move on to step 10. Setup is optional; a
 stuck Chrome connection should not block the rest of the handoff.
 
 When you talk to the user, describe the problem in plain language —
-"Chrome doesn't seem to be running normally," not internal config
-file names. The internal-fix column below is for **you** to act on
-silently; do not paste it into chat.
+"Chrome doesn't seem to have remote debugging enabled," not internal
+config file names. The internal-fix column below is for **you** to
+act on silently; do not paste it into chat.
 
 | Symptom (visible to you) | Likely cause | Internal fix you take |
 |--------------------------|--------------|------------------------|
-| `list_pages` returns empty | Chrome not running, or was launched with a custom remote-debugging port | Ask user to fully quit Chrome (Cmd+Q on macOS, close all windows on Windows) and reopen normally, then retry |
-| `list_pages` errors with "no browser" / can't find Chrome | Chrome version < 144 | Re-check version (9b); ask user to update via Chrome's About page |
+| `list_pages` returns empty | Remote debugging never ticked in `chrome://inspect/#remote-debugging` | Re-open the URL for the user (see 9d step 1), confirm with them that the checkbox is ticked, then retry |
+| `list_pages` returns empty (and remote debugging IS confirmed enabled) | Chrome was launched with a custom `--remote-debugging-port`, or no Chrome process is running | Ask user to fully quit Chrome (Cmd+Q on macOS, close all windows on Windows) and reopen normally, redo 9d, then retry |
+| `list_pages` errors with "no browser" / can't find Chrome | Chrome version < 144 | Re-check version (9a/9c); ask user to update via Chrome's About page |
 | `chrome-devtools` missing from `claude mcp list` | Stale Claude Code cache | Ask user to exit and restart Claude from the repo root |
 | Windows only: `npx` errors in MCP startup logs | Windows-specific shim was not applied | Re-run `setup-windows.ps1` to refresh the Windows MCP shim |
 | First call is slow | `npx` downloading the package on first run | Wait it out — one-time cost; subsequent calls reuse the local cache |
 
-#### 9f. Show the user what they just got
+#### 9g. Show the user what they just got
 
 Briefly, in the user's words, list two or three concrete things you
 can now do on their behalf. Tailor it to who they are — for a lab
@@ -760,10 +1048,6 @@ scientist that's usually:
   review before submitting."
 - "If a web app is misbehaving, I can read the console errors and
   network requests directly instead of asking you to paste them."
-
-Then hand control back: ask them which sites or kinds of actions
-they'd want you to pause and confirm on before clicking, and note
-their answer for the rest of the session.
 
 ### 10. Guided first task
 
@@ -793,7 +1077,7 @@ finish it first and come back here.
 >
 > **Last-use audit (verified before placing this step):** none of the files
 > below are referenced by any later step in this doc. `setup-windows.ps1`'s
-> last reference was step 9e (Chrome troubleshooting), `RECOVERY.md`'s
+> last reference was step 9f (Chrome troubleshooting), `RECOVERY.md`'s
 > last live-triage reference was step 7. All are now safely deletable.
 
 #### 11a. Tell the user what you're about to do
@@ -816,7 +1100,8 @@ Run from the repo root:
 rm -f install.sh install.ps1 \
       setup-mac.sh setup-windows.ps1 \
       INSTALL_FOR_AGENTS.md RECOVERY.md \
-      .elnora-starter-kit-marker
+      .elnora-starter-kit-marker \
+      .elnora-handoff-resume.json
 git rm -q -f .vscode/run-handoff.ps1 .vscode/run-handoff.sh .vscode/tasks.json
 ```
 
@@ -845,7 +1130,7 @@ If a future change adds a fourth file under `.vscode/`, append it to the
 ```
 for f in install.sh install.ps1 setup-mac.sh setup-windows.ps1 \
          INSTALL_FOR_AGENTS.md RECOVERY.md \
-         .elnora-starter-kit-marker; do
+         .elnora-starter-kit-marker .elnora-handoff-resume.json; do
     [ ! -e "$f" ] || echo "STILL PRESENT: $f"
 done
 [ ! -d .vscode ] || echo "STILL PRESENT: .vscode/"
@@ -973,9 +1258,10 @@ push error and tell the user to retry with `git push origin main`. Do
 Tell the user:
 
 - [OK] Setup complete.
-- The local repo lives at `<repo-path>`.
+- The local repo lives at `$PWD` (folder name `$WORKSPACE_NAME`).
 - Their private GitHub repo is at
-  `https://github.com/<gh-username>/<chosen-name>` (`origin`).
+  `https://github.com/$GH_USER/$WORKSPACE_NAME` (`origin`) — same name
+  as the local folder, so the two stay in sync.
 - Their Elnora API key is saved to `~/.elnora/profiles.toml` (mode 600,
   outside the repo, never committed). Every new terminal stays authed.
 - The Elnora CLI works globally — `elnora --help` from any terminal.

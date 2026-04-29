@@ -4,8 +4,10 @@
 # Usage (PowerShell):
 #   irm https://raw.githubusercontent.com/Elnora-AI/elnora-starter-kit/main/install.ps1 | iex
 #
-# Downloads the starter kit zip (no git required), extracts it to
-# %USERPROFILE%\Documents\elnora-starter-kit, and runs setup-windows.ps1.
+# Prompts for a workspace name (used for BOTH the local folder name AND
+# the GitHub repo name created in Phase 2), downloads the starter kit zip
+# (no git required), extracts to %USERPROFILE%\Documents\<workspace-name>,
+# and runs setup-windows.ps1.
 # ============================================================
 
 $ErrorActionPreference = "Stop"
@@ -21,13 +23,64 @@ $ErrorActionPreference = "Stop"
 $RepoOwner = "Elnora-AI"
 $RepoName  = "elnora-starter-kit"
 $Branch    = "main"
-$TargetDir = Join-Path $env:USERPROFILE "Documents\$RepoName"
+
+# ---- Workspace name -------------------------------------------------------
+# This name is used for BOTH the local folder under Documents\ AND the
+# GitHub repo we create later in Phase 2. Locking them in lockstep up
+# front avoids a class of bugs where the local path and GitHub remote
+# drift out of sync.
+#
+# Resolution order:
+#   1. $env:ELNORA_WORKSPACE_NAME (CI / scripted runs).
+#   2. Interactive Read-Host prompt (irm | iex runs in the caller's
+#      session, so Read-Host reaches the real console).
+#   3. Fallback to "elnora-starter-kit" for non-interactive contexts
+#      with no env override.
+#
+# Validation matches the handoff doc's GitHub repo-name rule
+# ([A-Za-z0-9._-]+) so whatever the user picks here is also a legal
+# `gh repo create` argument.
+$nameRegex = '^[A-Za-z0-9._-]+$'
+$defaultName = "$env:USERNAME-agents"
+if ([string]::IsNullOrWhiteSpace($env:USERNAME)) { $defaultName = "me-agents" }
 
 Write-Host ""
 Write-Host "===========================================" -ForegroundColor Cyan
 Write-Host "  Elnora Starter Kit - Bootstrap" -ForegroundColor Cyan
 Write-Host "===========================================" -ForegroundColor Cyan
 Write-Host ""
+
+if (-not [string]::IsNullOrWhiteSpace($env:ELNORA_WORKSPACE_NAME)) {
+    $WorkspaceName = $env:ELNORA_WORKSPACE_NAME
+} elseif ([Environment]::UserInteractive -and $Host.UI.RawUI) {
+    Write-Host "Pick a name for your workspace. This becomes BOTH:"
+    Write-Host "  - the local folder under $env:USERPROFILE\Documents\"
+    Write-Host "  - the GitHub repo we'll create for you in Phase 2"
+    Write-Host ""
+    Write-Host "Letters, numbers, dots, dashes, and underscores only."
+    Write-Host ""
+    while ($true) {
+        $reply = Read-Host -Prompt "Workspace name [$defaultName]"
+        if ([string]::IsNullOrWhiteSpace($reply)) { $reply = $defaultName }
+        if ($reply -match $nameRegex) {
+            $WorkspaceName = $reply
+            break
+        }
+        Write-Host "  [!] '$reply' isn't a legal name. Try again." -ForegroundColor Yellow
+    }
+    Write-Host ""
+} else {
+    $WorkspaceName = "elnora-starter-kit"
+}
+
+if ($WorkspaceName -notmatch $nameRegex) {
+    Write-Host "[!] ELNORA_WORKSPACE_NAME='$WorkspaceName' is not a legal repo name." -ForegroundColor Red
+    Write-Host "    Allowed: letters, digits, dot, dash, underscore." -ForegroundColor Red
+    throw "Invalid workspace name: $WorkspaceName"
+}
+
+$TargetDir = Join-Path $env:USERPROFILE "Documents\$WorkspaceName"
+
 Write-Host "This will:"
 Write-Host "  1. Download the starter kit to $TargetDir"
 Write-Host "  2. Run setup-windows.ps1 (installs Claude Code + dev tools)"

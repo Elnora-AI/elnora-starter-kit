@@ -49,10 +49,11 @@ verification. Running it means trusting those sources.
 
 ## What happens
 
-1. **Phase 1 install (~5–10 min):** clones the repo to
-   `~/Documents/elnora-starter-kit/` and installs Claude Code, the Elnora CLI,
-   Node.js, Git, Python, VS Code, GitHub CLI, and Obsidian. Existing
-   installs are skipped. Output goes to `~/claude-starter-install.log`.
+1. **Phase 1 install (~5–10 min):** prompts for a name for your workspace
+   (used for both the local folder and the GitHub repo we'll create later),
+   clones the repo to `~/Documents/<your-name>/`, and installs Claude Code,
+   the Elnora CLI, Node.js, Git, Python, VS Code, GitHub CLI, and Obsidian.
+   Existing installs are skipped. Output goes to `~/claude-starter-install.log`.
 2. **Auth:** Claude Pro/Max (required), GitHub CLI (skippable), Elnora CLI
    (skippable; the MCP prompts on first use).
 3. **Phase 2 handoff (~3–5 min):** Claude verifies versions, creates your

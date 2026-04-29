@@ -1237,6 +1237,13 @@ if ($env:ELNORA_SKIP_HANDOFF -eq "1" -or $env:ELNORA_HANDOFF_MODE -eq "headless"
                     Write-Host "      [OK] Logged in."
                 }
                 "^[Ss]" {
+                    # Use the live working directory for the resume hint -- the
+                    # user picked their workspace name in install.ps1, so the
+                    # folder is no longer guaranteed to be Documents\elnora-starter-kit.
+                    $kitDirDisplay = (Get-Location).Path
+                    if ($kitDirDisplay.StartsWith($env:USERPROFILE)) {
+                        $kitDirDisplay = '$env:USERPROFILE' + $kitDirDisplay.Substring($env:USERPROFILE.Length)
+                    }
                     Write-Host ""
                     Write-Host "  +============================================================+"
                     Write-Host "  |                                                            |"
@@ -1248,7 +1255,7 @@ if ($env:ELNORA_SKIP_HANDOFF -eq "1" -or $env:ELNORA_HANDOFF_MODE -eq "headless"
                     Write-Host "  |                                                            |"
                     Write-Host "  |   When you're ready:                                       |"
                     Write-Host "  |                                                            |"
-                    Write-Host "  |     cd `$env:USERPROFILE\Documents\elnora-starter-kit       |"
+                    Write-Host "  |     cd $kitDirDisplay"
                     Write-Host "  |     .\setup-windows.ps1                                    |"
                     Write-Host "  |                                                            |"
                     Write-Host "  |   Re-running is safe - installs are skipped if already     |"

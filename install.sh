@@ -5,8 +5,10 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/Elnora-AI/elnora-starter-kit/main/install.sh | bash
 #
-# Downloads the starter kit tarball (no git required), extracts it to
-# ~/Documents/elnora-starter-kit, and runs setup-mac.sh.
+# Prompts for a workspace name (used for BOTH the local folder name AND
+# the GitHub repo name created in Phase 2), downloads the starter kit
+# tarball (no git required), extracts to ~/Documents/<workspace-name>,
+# and runs setup-mac.sh.
 # ============================================================
 
 set -euo pipefail
@@ -14,14 +16,84 @@ set -euo pipefail
 REPO_OWNER="Elnora-AI"
 REPO_NAME="elnora-starter-kit"
 BRANCH="main"
-TARGET_DIR="$HOME/Documents/elnora-starter-kit"
+
+# ---- Workspace name -------------------------------------------------------
+# This name is used for BOTH the local folder under ~/Documents AND the
+# GitHub repo we create later in Phase 2. Locking them in lockstep up
+# front avoids a class of bugs where the local path and GitHub remote
+# drift out of sync.
+#
+# Resolution order:
+#   1. $ELNORA_WORKSPACE_NAME env var (CI / scripted runs).
+#   2. Interactive prompt on /dev/tty (curl|bash leaves stdin closed,
+#      so we read the user's tty directly, same pattern setup-mac.sh
+#      uses for git config prompts).
+#   3. Fallback to "elnora-starter-kit" so non-interactive contexts
+#      with no env var (older test rigs, headless runners) still work.
+#
+# Validation enforces the project naming convention (see CLAUDE.md
+# > Naming Conventions): lowercase letters, digits, and dashes only.
+# No uppercase, no spaces, no underscores, no dots. Self-explaining
+# names with the user's name as a prefix are encouraged
+# (e.g. carmen-agents, carmen-vault, carmen-knowledge-base).
+#
+# This is stricter than GitHub's own repo-name rule ([A-Za-z0-9._-]+),
+# so anything that passes here also passes `gh repo create`.
+NAME_RE='^[a-z0-9-]+$'
+
+# Normalize $USER for the default suggestion: lowercase + replace
+# spaces with dashes + strip illegal chars. Accounts/Macs sometimes
+# have mixed-case usernames or spaces ("First Last"), and we still
+# want a reasonable default the regex will accept.
+_user_lower="$(printf '%s' "${USER:-me}" \
+    | tr '[:upper:]' '[:lower:]' \
+    | tr ' ' '-' \
+    | tr -cd 'a-z0-9-')"
+[ -z "$_user_lower" ] && _user_lower="me"
+default_name="${_user_lower}-agents"
 
 echo "==========================================="
 echo "  Elnora Starter Kit - Bootstrap"
 echo "==========================================="
 echo ""
+
+if [ -n "${ELNORA_WORKSPACE_NAME:-}" ]; then
+    WORKSPACE_NAME="$ELNORA_WORKSPACE_NAME"
+elif [ -c /dev/tty ] && (exec 3</dev/tty) 2>/dev/null; then
+    echo "Pick a name for your workspace. This becomes BOTH:"
+    echo "  - the local folder under ~/Documents/"
+    echo "  - the GitHub repo we'll create for you in Phase 2"
+    echo ""
+    echo "Naming rules (project convention):"
+    echo "  - lowercase letters, digits, and dashes only"
+    echo "  - no spaces, no underscores, no uppercase"
+    echo "  - self-explaining: ${_user_lower}-agents, ${_user_lower}-vault,"
+    echo "    ${_user_lower}-knowledge-base, ${_user_lower}-filesystem, etc."
+    echo ""
+    while :; do
+        printf "Workspace name [%s]: " "$default_name" > /dev/tty
+        IFS= read -r reply < /dev/tty || reply=""
+        WORKSPACE_NAME="${reply:-$default_name}"
+        if [[ "$WORKSPACE_NAME" =~ $NAME_RE ]]; then
+            break
+        fi
+        echo "  [!] '$WORKSPACE_NAME' isn't a legal name. Use lowercase letters, digits, and dashes only." > /dev/tty
+    done
+    echo ""
+else
+    WORKSPACE_NAME="elnora-starter-kit"
+fi
+
+if ! [[ "$WORKSPACE_NAME" =~ $NAME_RE ]]; then
+    echo "[!] ELNORA_WORKSPACE_NAME='$WORKSPACE_NAME' violates the project naming convention." >&2
+    echo "    Allowed: lowercase letters, digits, and dashes only (^[a-z0-9-]+\$)." >&2
+    exit 1
+fi
+
+TARGET_DIR="$HOME/Documents/$WORKSPACE_NAME"
+
 echo "This will:"
-echo "  1. Download the starter kit to ~/Documents/elnora-starter-kit"
+echo "  1. Download the starter kit to $TARGET_DIR"
 echo "  2. Run setup-mac.sh (installs Claude Code + dev tools)"
 echo ""
 

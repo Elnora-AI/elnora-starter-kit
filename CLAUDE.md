@@ -48,6 +48,31 @@ If the project runs on more than one OS, avoid shell-specific syntax. Prefer
 `python3 ... || python ...` fallbacks, `path.join()` for paths, and ship both
 `.sh` and `.ps1` scripts when adding setup tooling.
 
+### 7. Naming conventions
+
+Whenever you create or suggest a name for a folder, GitHub repo, Obsidian
+vault, file path, or any other user-facing identifier, follow these rules:
+
+- **Lowercase only.** No `Carmen-Agents`, no `MyVault`. Use `carmen-agents`,
+  `my-vault`.
+- **Dashes for word breaks.** No spaces (`carmen agents`), no underscores
+  (`carmen_agents`), no dots (`carmen.agents`). The validation regex used
+  across this kit is `^[a-z0-9-]+$`.
+- **Self-explaining and prefixed with the user's name when relevant**:
+  `carmen-agents` (the agent workspace), `carmen-vault` /
+  `carmen-knowledge-base` (the Obsidian vault), `carmen-filesystem`,
+  `carmen-website`. The prefix tells the user "this is mine" at a glance,
+  and the suffix tells them what's inside.
+- **No version numbers in names**. Version-tag with git, not by appending
+  `-v2` to the folder.
+
+When you ask the user for a name, suggest a default that follows the
+pattern (e.g. `<their-username>-agents`) so they can hit Enter and move on.
+When you receive a name that violates the rules, do not silently accept it
+— show them the rule and ask again. The starter kit's `install.sh` /
+`install.ps1` already enforce this on the workspace name; the same
+convention applies to anything Claude creates or suggests downstream.
+
 ---
 
 ## Permission scope
