@@ -43,10 +43,16 @@ $Branch    = "main"
 # names with the user's name as a prefix are encouraged
 # (e.g. carmen-agents, carmen-vault, carmen-knowledge-base).
 #
+# Anchored on both ends with alphanumerics so we reject leading/trailing
+# dashes and dash-only inputs (`-foo`, `foo-`, `--`, `-`). A leading dash
+# would be parsed as a flag by `gh repo create` later; a folder named
+# `-rf` would be a particularly mean foot-gun. Single-char inputs
+# (`a`, `1`) are still allowed via the optional middle group.
+#
 # This is stricter than GitHub's own repo-name rule ([A-Za-z0-9._-]+),
 # so anything that passes here also passes `gh repo create`. Mirrors
 # install.sh's NAME_RE — cross-platform parity matters for the rule.
-$nameRegex = '^[a-z0-9-]+$'
+$nameRegex = '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
 
 # Normalize $env:USERNAME for the default suggestion: lowercase + replace
 # whitespace runs with single dashes + strip illegal chars. Windows
@@ -83,7 +89,7 @@ if (-not [string]::IsNullOrWhiteSpace($env:ELNORA_WORKSPACE_NAME)) {
             $WorkspaceName = $reply
             break
         }
-        Write-Host "  [!] '$reply' isn't a legal name. Use lowercase letters, digits, and dashes only." -ForegroundColor Yellow
+        Write-Host "  [!] '$reply' isn't a legal name. Use lowercase letters, digits, and dashes only; must start and end with a letter or digit (no leading/trailing dash)." -ForegroundColor Yellow
     }
     Write-Host ""
 } else {
@@ -92,7 +98,7 @@ if (-not [string]::IsNullOrWhiteSpace($env:ELNORA_WORKSPACE_NAME)) {
 
 if ($WorkspaceName -notmatch $nameRegex) {
     Write-Host "[!] ELNORA_WORKSPACE_NAME='$WorkspaceName' violates the project naming convention." -ForegroundColor Red
-    Write-Host "    Allowed: lowercase letters, digits, and dashes only (^[a-z0-9-]+`$)." -ForegroundColor Red
+    Write-Host "    Allowed: lowercase letters, digits, and dashes; must start and end with a letter/digit (^[a-z0-9]([a-z0-9-]*[a-z0-9])?`$)." -ForegroundColor Red
     throw "Invalid workspace name: $WorkspaceName"
 }
 
@@ -109,7 +115,25 @@ Write-Host ""
 # System tools (Claude, Node, Python, Obsidian) are NOT touched here:
 # setup-windows.ps1 detects existing installs and updates in place, so
 # re-running won't blow away a working toolchain.
+#
+# EXCEPTION: if the agent left a handoff resume marker
+# (.elnora-handoff-resume.json) in this folder, refuse to wipe. The marker
+# means a previous Phase 2 hit a GitHub-name collision and asked the user
+# to re-run setup-windows.ps1, NOT install.ps1. Wiping would silently drop
+# the resume state and the next agent session would start over instead of
+# picking up at step 6c.3. Tell the user the right command and bail.
 if (Test-Path $TargetDir) {
+    if (Test-Path (Join-Path $TargetDir ".elnora-handoff-resume.json")) {
+        Write-Host "[!] $TargetDir already contains an in-progress Phase 2 handoff" -ForegroundColor Red
+        Write-Host "    (.elnora-handoff-resume.json marker present)." -ForegroundColor Red
+        Write-Host ""
+        Write-Host "    Don't re-run install.ps1 -- it would erase the resume state." -ForegroundColor Red
+        Write-Host "    Instead, finish the handoff from the existing folder:" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "      cd `"$TargetDir`"; .\setup-windows.ps1" -ForegroundColor Red
+        Write-Host ""
+        throw "Refusing to wipe in-progress handoff at $TargetDir"
+    }
     Write-Host "Existing starter kit detected at $TargetDir" -ForegroundColor Gray
     Write-Host "Wiping for a fresh install (system tools like Claude, Node, Python are kept)..." -ForegroundColor Gray
     Remove-Item -Path $TargetDir -Recurse -Force

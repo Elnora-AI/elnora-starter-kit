@@ -37,9 +37,15 @@ BRANCH="main"
 # names with the user's name as a prefix are encouraged
 # (e.g. carmen-agents, carmen-vault, carmen-knowledge-base).
 #
+# Anchored on both ends with alphanumerics so we reject leading/trailing
+# dashes and dash-only inputs (`-foo`, `foo-`, `--`, `-`). A leading dash
+# would be parsed as a flag by `gh repo create` / `mkdir` later; a folder
+# named `-rf` would be a particularly mean foot-gun. Single-char inputs
+# (`a`, `1`) are still allowed via the optional middle group.
+#
 # This is stricter than GitHub's own repo-name rule ([A-Za-z0-9._-]+),
 # so anything that passes here also passes `gh repo create`.
-NAME_RE='^[a-z0-9-]+$'
+NAME_RE='^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
 
 # Normalize $USER for the default suggestion: lowercase + replace
 # spaces with dashes + strip illegal chars. Accounts/Macs sometimes
@@ -77,7 +83,7 @@ elif [ -c /dev/tty ] && (exec 3</dev/tty) 2>/dev/null; then
         if [[ "$WORKSPACE_NAME" =~ $NAME_RE ]]; then
             break
         fi
-        echo "  [!] '$WORKSPACE_NAME' isn't a legal name. Use lowercase letters, digits, and dashes only." > /dev/tty
+        echo "  [!] '$WORKSPACE_NAME' isn't a legal name. Use lowercase letters, digits, and dashes only; must start and end with a letter or digit (no leading/trailing dash)." > /dev/tty
     done
     echo ""
 else
@@ -86,7 +92,7 @@ fi
 
 if ! [[ "$WORKSPACE_NAME" =~ $NAME_RE ]]; then
     echo "[!] ELNORA_WORKSPACE_NAME='$WORKSPACE_NAME' violates the project naming convention." >&2
-    echo "    Allowed: lowercase letters, digits, and dashes only (^[a-z0-9-]+\$)." >&2
+    echo "    Allowed: lowercase letters, digits, and dashes; must start and end with a letter/digit (^[a-z0-9]([a-z0-9-]*[a-z0-9])?\$)." >&2
     exit 1
 fi
 
@@ -103,7 +109,25 @@ echo ""
 # System tools (Claude, Node, Python, brew, Obsidian) are NOT touched here:
 # setup-mac.sh detects existing installs and updates in place, so re-running
 # won't blow away a working toolchain.
+#
+# EXCEPTION: if the agent left a handoff resume marker
+# (.elnora-handoff-resume.json) in this folder, refuse to wipe. The marker
+# means a previous Phase 2 hit a GitHub-name collision and asked the user
+# to re-run setup-mac.sh, NOT install.sh. Wiping would silently drop the
+# resume state and the next agent session would start over instead of
+# picking up at step 6c.3. Tell the user the right command and bail.
 if [ -d "$TARGET_DIR" ]; then
+    if [ -f "$TARGET_DIR/.elnora-handoff-resume.json" ]; then
+        echo "[!] $TARGET_DIR already contains an in-progress Phase 2 handoff" >&2
+        echo "    (.elnora-handoff-resume.json marker present)." >&2
+        echo "" >&2
+        echo "    Don't re-run install.sh -- it would erase the resume state." >&2
+        echo "    Instead, finish the handoff from the existing folder:" >&2
+        echo "" >&2
+        echo "      cd \"$TARGET_DIR\" && bash setup-mac.sh" >&2
+        echo "" >&2
+        exit 1
+    fi
     echo "Existing starter kit detected at $TARGET_DIR"
     echo "Wiping for a fresh install (system tools like Claude, Node, Python are kept)..."
     rm -rf "$TARGET_DIR"

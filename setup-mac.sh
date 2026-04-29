@@ -959,6 +959,15 @@ else
                 case "$kit_dir_display" in
                     "$HOME"/*) kit_dir_display="~${kit_dir_display#"$HOME"}" ;;
                 esac
+                # The ASCII box is 60 chars wide; the cd line carries 8
+                # chars of prefix ("  |     cd ") plus a 52-char field plus
+                # the trailing "|". %-52s pads short strings but does NOT
+                # truncate long ones, so a path > 52 chars would push the
+                # right border off the row. Pre-truncate with an ellipsis
+                # so the box stays aligned regardless of workspace name.
+                if [ "${#kit_dir_display}" -gt 52 ]; then
+                    kit_dir_display="${kit_dir_display:0:49}..."
+                fi
                 echo ""
                 echo "  +============================================================+"
                 echo "  |                                                            |"

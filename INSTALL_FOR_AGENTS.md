@@ -128,15 +128,18 @@ mode, follow these adjustments:
       NOT prompt. Set `WORKSPACE_NAME="$ELNORA_HANDOFF_REPO_NAME"` (CI
       sets this to `elnora-handoff-ci-<github_run_id>-<attempt>-<os>`,
       collision-free across reruns). Validate it matches
-      `[A-Za-z0-9._-]+` like the doc says, but skip the user
+      `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` (the strict project regex
+      install.sh enforces — same rule everywhere), but skip the user
       conversation.
     - **6c.2 (availability check + collision recovery):** SKIP. The
       CI repo name is unique per run by construction, so the
       availability check is a guaranteed pass and the collision
       recovery (write resume marker, ask user to close+rename+reopen)
-      is unreachable. The local folder name in CI does NOT need to
-      match `WORKSPACE_NAME` — the test fixture asserts on the
-      GitHub repo name only.
+      is unreachable. CI ALSO stages the kit at a path whose basename
+      equals `$ELNORA_HANDOFF_REPO_NAME`, so the local folder name
+      and GitHub repo name match by construction — the same invariant
+      install.sh enforces for real users. The handoff-e2e workflow
+      asserts this match before invoking the agent.
     - **6c.3+6c.4 (init + commit):** run as written.
     - **6c.5 (create+push):** run `gh repo create "$WORKSPACE_NAME"
       --private --source=. --push` and run all four gates as written
@@ -238,10 +241,15 @@ test -f .elnora-handoff-resume.json && echo "RESUME" || echo "FRESH"
      ```
      cat .elnora-handoff-resume.json
      ```
+     (On Windows: `Get-Content .elnora-handoff-resume.json` — `cat` is
+     aliased to `Get-Content` in modern PowerShell, so the bash form
+     also works, but `Get-Content` is the canonical name.)
+
      Confirm fields are present: `next_step`, `workspace_name`,
      `previous_workspace_name`, `gh_user`. If any field is missing or
      the JSON is malformed, surface that to the user, delete the
-     marker (`rm .elnora-handoff-resume.json`), and start Phase 2 from
+     marker (`rm .elnora-handoff-resume.json`, or `Remove-Item
+     .elnora-handoff-resume.json` on Windows), and start Phase 2 from
      step 1 — better to redo work than to follow a half-corrupt marker.
 
   2. Confirm we are in the renamed folder, not the old one:
@@ -275,12 +283,13 @@ test -f .elnora-handoff-resume.json && echo "RESUME" || echo "FRESH"
      WORKSPACE_NAME="<workspace_name from marker>"
      GH_USER="<gh_user from marker>"
      ```
-     For `next_step="6c.5"` (the only value currently produced) jump
-     to step 6c.3 (init), 6c.4 (commit), 6c.5 (gh repo create), 6c.6
-     (fetch verify) — i.e. do steps 6c.3 onward as written, with
-     `WORKSPACE_NAME` already populated. Skip step 6c.1 (it's the
-     "read name from $PWD" prep we no longer need) and step 6c.2 (the
-     availability check we already passed before the rename).
+     `next_step` is a literal step pointer — jump directly to that step
+     and walk forward as written. The only value currently produced is
+     `next_step="6c.3"`: do 6c.3 (init), 6c.4 (commit), 6c.5 (gh repo
+     create), 6c.6 (fetch verify), with `WORKSPACE_NAME` already
+     populated. Skip step 6c.1 (it's the "read name from $PWD" prep we
+     no longer need) and step 6c.2 (the availability check we already
+     passed before the rename).
 
   6. **After step 6 completes successfully, delete the marker**:
      ```
@@ -473,10 +482,12 @@ the same step, before any git history exists.
    echo "Workspace name: $WORKSPACE_NAME"
    ```
 
-   **Gate**: `WORKSPACE_NAME` is non-empty and matches `[A-Za-z0-9._-]+`.
-   If it doesn't match (the user manually renamed the folder to something
-   illegal), tell them the constraint and ask them to rename it themselves
-   before continuing.
+   **Gate**: `WORKSPACE_NAME` is non-empty and matches
+   `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` — the same strict project regex
+   install.sh enforces (lowercase letters, digits, dashes; must start and
+   end with a letter or digit). If it doesn't match (the user manually
+   renamed the folder to something illegal), tell them the constraint and
+   ask them to rename it themselves before continuing.
 
    Tell the user (in plain language):
 
@@ -530,9 +541,11 @@ the same step, before any git history exists.
    > without breaking my own session — explanation in a moment.)"
 
    Loop until you have an available name:
-   1. Ask the user for a new name. Validate it matches `^[a-z0-9-]+$`
-      (project naming convention — see `CLAUDE.md` > Naming
-      Conventions) and is non-empty.
+   1. Ask the user for a new name. Validate it matches
+      `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` (project naming convention —
+      see `CLAUDE.md` > Naming Conventions; lowercase letters, digits,
+      and dashes; must start and end with a letter or digit) and is
+      non-empty.
    2. Re-check availability:
       ```
       if gh repo view "$GH_USER/$NEW_NAME" --json name >/dev/null 2>&1; then
@@ -550,13 +563,19 @@ the same step, before any git history exists.
    {
      "version": 1,
      "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-     "next_step": "6c.5",
+     "next_step": "6c.3",
      "workspace_name": "$NEW_NAME",
      "previous_workspace_name": "$OLD_NAME",
      "gh_user": "$GH_USER"
    }
    EOF
    ```
+
+   `next_step` points at the *first* step the resumed session must
+   execute (6c.3 = `git init` on the renamed folder). The earlier
+   substeps — 6c.1 (read name from `$PWD`) and 6c.2 (availability
+   check) — were already done in this pre-rename session and are
+   skipped on resume.
 
    **Gate**: `cat .elnora-handoff-resume.json` shows the JSON above
    with real (non-empty) values for every field, and `git status
