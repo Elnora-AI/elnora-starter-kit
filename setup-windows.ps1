@@ -749,23 +749,31 @@ if (-not $nodeMajorOk) {
         $nodeWinVersion = $null
         $nodeWinSource  = $null
 
-        # ---- Layer 1: canonical pin existence check
+        # ---- Layer 1: canonical pin existence check via winget local catalog
+        # If `winget show --id OpenJS.NodeJS --version 22.22.2` exits 0, the
+        # pin is still present and we can install it directly. Capture
+        # stderr too so we can see WHY the show call failed in CI logs
+        # (the silent 2>$null in iter2 ate diagnostics and we ended up
+        # falling through every layer to LTS without knowing why).
         Write-Host "  Resolving Node 22.x..." -ForegroundColor Gray
-        $null = winget show --id OpenJS.NodeJS --version $nodeWinPreferred --accept-source-agreements --disable-interactivity 2>$null
+        $showPinErr = winget show --id OpenJS.NodeJS --version $nodeWinPreferred --source winget --accept-source-agreements --disable-interactivity 2>&1 | Out-String
         if ($LASTEXITCODE -eq 0) {
             $nodeWinVersion = $nodeWinPreferred
-            $nodeWinSource  = "canonical pin (still in catalog)"
+            $nodeWinSource  = "canonical pin (winget local catalog hit)"
+        } else {
+            Write-Host "  Layer 1: winget show --version $nodeWinPreferred returned exit $LASTEXITCODE" -ForegroundColor DarkGray
+            $showPinErr.Trim().Split("`n") | Select-Object -First 3 | ForEach-Object {
+                if ($_ -ne "") { Write-Host "    | $_" -ForegroundColor DarkGray }
+            }
         }
 
         # ---- Layer 2: parse winget local catalog --versions output
         if (-not $nodeWinVersion) {
-            $catalogRaw = winget show --id OpenJS.NodeJS --versions --accept-source-agreements --disable-interactivity 2>$null
-            $catalogVersions = @()
-            if ($catalogRaw) {
-                $catalogVersions = $catalogRaw |
-                    ForEach-Object { $_.Trim() } |
-                    Where-Object { $_ -match '^\d+\.\d+\.\d+$' }
-            }
+            $catalogOut = winget show --id OpenJS.NodeJS --versions --source winget --accept-source-agreements --disable-interactivity 2>&1 | Out-String
+            $catalogLines = $catalogOut -split "`n"
+            $catalogVersions = @($catalogLines |
+                ForEach-Object { $_.Trim() } |
+                Where-Object { $_ -match '^\d+\.\d+\.\d+$' })
             $latest22 = $catalogVersions |
                 Where-Object { $_ -like '22.*' } |
                 Sort-Object -Property { [Version]$_ } -Descending |
@@ -773,13 +781,22 @@ if (-not $nodeMajorOk) {
             if ($latest22) {
                 $nodeWinVersion = $latest22
                 $nodeWinSource  = "winget local catalog (canonical pin aged off; latest 22.x)"
+            } else {
+                Write-Host "  Layer 2: winget show --versions parsed $($catalogVersions.Count) versions; no 22.x match." -ForegroundColor DarkGray
             }
         }
 
         # ---- Layer 3: microsoft/winget-pkgs GitHub manifests
+        # winget-pkgs lays out manifests as
+        # manifests/o/OpenJS/NodeJS/<MAJOR>/<X.Y.Z>/ -- the per-major
+        # subdirectory holds the full-version manifests. iter2 listed the
+        # parent and got back ["10","12",..,"22","23","24.0.0",..] -- the
+        # "22" entry there is the major directory, not a full version, so
+        # the regex `^22\.\d+\.\d+$` matched nothing and we silently fell
+        # through to LTS. Query the per-major path explicitly.
         if (-not $nodeWinVersion) {
             try {
-                $apiUrl = "https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/o/OpenJS/NodeJS"
+                $apiUrl = "https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/o/OpenJS/NodeJS/22"
                 $resp = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing -TimeoutSec 30
                 $repo22 = $resp |
                     Where-Object { $_.type -eq 'dir' -and $_.name -match '^22\.\d+\.\d+$' } |
@@ -788,10 +805,12 @@ if (-not $nodeMajorOk) {
                     Select-Object -First 1
                 if ($repo22) {
                     $nodeWinVersion = $repo22
-                    $nodeWinSource  = "winget-pkgs GitHub manifests (winget local catalog returned no 22.x)"
+                    $nodeWinSource  = "winget-pkgs GitHub manifests (manifests/o/OpenJS/NodeJS/22)"
+                } else {
+                    Write-Host "  Layer 3: winget-pkgs API returned $($resp.Count) entries; no 22.x dir match." -ForegroundColor DarkGray
                 }
             } catch {
-                Write-Host "  Note: winget-pkgs GitHub query failed: $($_.Exception.Message)" -ForegroundColor Gray
+                Write-Host "  Layer 3: winget-pkgs GitHub query failed: $($_.Exception.Message)" -ForegroundColor Yellow
             }
         }
 
