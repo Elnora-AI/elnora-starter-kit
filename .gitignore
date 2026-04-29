@@ -66,6 +66,14 @@ azure-*.json
 # not user content — keep it out of customers' initial commit.
 .elnora-starter-kit-marker
 
+# Phase 2 collision-recovery resume marker. INSTALL_FOR_AGENTS.md step
+# 6c.2 writes this when a GitHub repo-name collision forces a folder
+# rename; the next session's step 0 reads it and jumps to step 6c.5.
+# Lives on disk only across the close-rename-reopen handoff — must never
+# enter git history (the user's first commit happens AFTER the rename, in
+# step 6c.4's `git add .`). Step 0.6 deletes it locally once consumed.
+.elnora-handoff-resume.json
+
 # One-shot Phase 1 -> Phase 2 handoff sentinel. setup-mac.sh / setup-windows.ps1
 # write the literal handoff prompt into this file, then open VS Code; the
 # .vscode/run-handoff.{sh,ps1} helper reads it once and deletes it. Pure

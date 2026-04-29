@@ -5,8 +5,10 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/Elnora-AI/elnora-starter-kit/main/install.sh | bash
 #
-# Downloads the starter kit tarball (no git required), extracts it to
-# ~/Documents/elnora-starter-kit, and runs setup-mac.sh.
+# Prompts for a workspace name (used for BOTH the local folder name AND
+# the GitHub repo name created in Phase 2), downloads the starter kit
+# tarball (no git required), extracts to ~/Documents/<workspace-name>,
+# and runs setup-mac.sh.
 # ============================================================
 
 set -euo pipefail
@@ -14,14 +16,90 @@ set -euo pipefail
 REPO_OWNER="Elnora-AI"
 REPO_NAME="elnora-starter-kit"
 BRANCH="main"
-TARGET_DIR="$HOME/Documents/elnora-starter-kit"
+
+# ---- Workspace name -------------------------------------------------------
+# This name is used for BOTH the local folder under ~/Documents AND the
+# GitHub repo we create later in Phase 2. Locking them in lockstep up
+# front avoids a class of bugs where the local path and GitHub remote
+# drift out of sync.
+#
+# Resolution order:
+#   1. $ELNORA_WORKSPACE_NAME env var (CI / scripted runs).
+#   2. Interactive prompt on /dev/tty (curl|bash leaves stdin closed,
+#      so we read the user's tty directly, same pattern setup-mac.sh
+#      uses for git config prompts).
+#   3. Fallback to "elnora-starter-kit" so non-interactive contexts
+#      with no env var (older test rigs, headless runners) still work.
+#
+# Validation enforces the project naming convention (see CLAUDE.md
+# > Naming Conventions): lowercase letters, digits, and dashes only.
+# No uppercase, no spaces, no underscores, no dots. Self-explaining
+# names with the user's name as a prefix are encouraged
+# (e.g. carmen-agents, carmen-vault, carmen-knowledge-base).
+#
+# Anchored on both ends with alphanumerics so we reject leading/trailing
+# dashes and dash-only inputs (`-foo`, `foo-`, `--`, `-`). A leading dash
+# would be parsed as a flag by `gh repo create` / `mkdir` later; a folder
+# named `-rf` would be a particularly mean foot-gun. Single-char inputs
+# (`a`, `1`) are still allowed via the optional middle group.
+#
+# This is stricter than GitHub's own repo-name rule ([A-Za-z0-9._-]+),
+# so anything that passes here also passes `gh repo create`.
+NAME_RE='^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
+
+# Normalize $USER for the default suggestion: lowercase + replace
+# spaces with dashes + strip illegal chars. Accounts/Macs sometimes
+# have mixed-case usernames or spaces ("First Last"), and we still
+# want a reasonable default the regex will accept.
+_user_lower="$(printf '%s' "${USER:-me}" \
+    | tr '[:upper:]' '[:lower:]' \
+    | tr ' ' '-' \
+    | tr -cd 'a-z0-9-')"
+[ -z "$_user_lower" ] && _user_lower="me"
+default_name="${_user_lower}-agents"
 
 echo "==========================================="
 echo "  Elnora Starter Kit - Bootstrap"
 echo "==========================================="
 echo ""
+
+if [ -n "${ELNORA_WORKSPACE_NAME:-}" ]; then
+    WORKSPACE_NAME="$ELNORA_WORKSPACE_NAME"
+elif [ -c /dev/tty ] && (exec 3</dev/tty) 2>/dev/null; then
+    echo "Pick a name for your workspace. This becomes BOTH:"
+    echo "  - the local folder under ~/Documents/"
+    echo "  - the GitHub repo we'll create for you in Phase 2"
+    echo ""
+    echo "Naming rules (project convention):"
+    echo "  - lowercase letters, digits, and dashes only"
+    echo "  - no spaces, no underscores, no uppercase"
+    echo "  - self-explaining: ${_user_lower}-agents, ${_user_lower}-vault,"
+    echo "    ${_user_lower}-knowledge-base, ${_user_lower}-filesystem, etc."
+    echo ""
+    while :; do
+        printf "Workspace name [%s]: " "$default_name" > /dev/tty
+        IFS= read -r reply < /dev/tty || reply=""
+        WORKSPACE_NAME="${reply:-$default_name}"
+        if [[ "$WORKSPACE_NAME" =~ $NAME_RE ]]; then
+            break
+        fi
+        echo "  [!] '$WORKSPACE_NAME' isn't a legal name. Use lowercase letters, digits, and dashes only; must start and end with a letter or digit (no leading/trailing dash)." > /dev/tty
+    done
+    echo ""
+else
+    WORKSPACE_NAME="elnora-starter-kit"
+fi
+
+if ! [[ "$WORKSPACE_NAME" =~ $NAME_RE ]]; then
+    echo "[!] ELNORA_WORKSPACE_NAME='$WORKSPACE_NAME' violates the project naming convention." >&2
+    echo "    Allowed: lowercase letters, digits, and dashes; must start and end with a letter/digit (^[a-z0-9]([a-z0-9-]*[a-z0-9])?\$)." >&2
+    exit 1
+fi
+
+TARGET_DIR="$HOME/Documents/$WORKSPACE_NAME"
+
 echo "This will:"
-echo "  1. Download the starter kit to ~/Documents/elnora-starter-kit"
+echo "  1. Download the starter kit to $TARGET_DIR"
 echo "  2. Run setup-mac.sh (installs Claude Code + dev tools)"
 echo ""
 
@@ -31,7 +109,25 @@ echo ""
 # System tools (Claude, Node, Python, brew, Obsidian) are NOT touched here:
 # setup-mac.sh detects existing installs and updates in place, so re-running
 # won't blow away a working toolchain.
+#
+# EXCEPTION: if the agent left a handoff resume marker
+# (.elnora-handoff-resume.json) in this folder, refuse to wipe. The marker
+# means a previous Phase 2 hit a GitHub-name collision and asked the user
+# to re-run setup-mac.sh, NOT install.sh. Wiping would silently drop the
+# resume state and the next agent session would start over instead of
+# picking up at step 6c.3. Tell the user the right command and bail.
 if [ -d "$TARGET_DIR" ]; then
+    if [ -f "$TARGET_DIR/.elnora-handoff-resume.json" ]; then
+        echo "[!] $TARGET_DIR already contains an in-progress Phase 2 handoff" >&2
+        echo "    (.elnora-handoff-resume.json marker present)." >&2
+        echo "" >&2
+        echo "    Don't re-run install.sh -- it would erase the resume state." >&2
+        echo "    Instead, finish the handoff from the existing folder:" >&2
+        echo "" >&2
+        echo "      cd \"$TARGET_DIR\" && bash setup-mac.sh" >&2
+        echo "" >&2
+        exit 1
+    fi
     echo "Existing starter kit detected at $TARGET_DIR"
     echo "Wiping for a fresh install (system tools like Claude, Node, Python are kept)..."
     rm -rf "$TARGET_DIR"

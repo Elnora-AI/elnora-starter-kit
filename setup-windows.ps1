@@ -1237,6 +1237,30 @@ if ($env:ELNORA_SKIP_HANDOFF -eq "1" -or $env:ELNORA_HANDOFF_MODE -eq "headless"
                     Write-Host "      [OK] Logged in."
                 }
                 "^[Ss]" {
+                    # Use the live working directory for the resume hint -- the
+                    # user picked their workspace name in install.ps1, so the
+                    # folder is no longer guaranteed to be Documents\elnora-starter-kit.
+                    $kitDirDisplay = (Get-Location).Path
+                    # OrdinalIgnoreCase: Windows paths are case-insensitive
+                    # but PowerShell's String.StartsWith defaults to ordinal
+                    # (case-sensitive). If $env:USERPROFILE casing differs
+                    # from (Get-Location).Path casing — happens with mixed-
+                    # case mount points or some PSReadLine setups — the
+                    # default would silently no-op the collapse and the
+                    # user would see the literal full path.
+                    if ($kitDirDisplay.StartsWith($env:USERPROFILE, [System.StringComparison]::OrdinalIgnoreCase)) {
+                        $kitDirDisplay = '$env:USERPROFILE' + $kitDirDisplay.Substring($env:USERPROFILE.Length)
+                    }
+                    # The ASCII box is 60 chars wide; the cd line carries 8
+                    # chars of prefix ("  |     cd ") plus a 52-char field
+                    # plus the trailing "|". {0,-52} pads short strings but
+                    # does NOT truncate long ones, so a path > 52 chars
+                    # would push the right border off the row. Pre-truncate
+                    # with an ellipsis so the box stays aligned regardless
+                    # of workspace name.
+                    if ($kitDirDisplay.Length -gt 52) {
+                        $kitDirDisplay = $kitDirDisplay.Substring(0, 49) + '...'
+                    }
                     Write-Host ""
                     Write-Host "  +============================================================+"
                     Write-Host "  |                                                            |"
@@ -1248,7 +1272,7 @@ if ($env:ELNORA_SKIP_HANDOFF -eq "1" -or $env:ELNORA_HANDOFF_MODE -eq "headless"
                     Write-Host "  |                                                            |"
                     Write-Host "  |   When you're ready:                                       |"
                     Write-Host "  |                                                            |"
-                    Write-Host "  |     cd `$env:USERPROFILE\Documents\elnora-starter-kit       |"
+                    Write-Host ("  |     cd {0,-52}|" -f $kitDirDisplay)
                     Write-Host "  |     .\setup-windows.ps1                                    |"
                     Write-Host "  |                                                            |"
                     Write-Host "  |   Re-running is safe - installs are skipped if already     |"

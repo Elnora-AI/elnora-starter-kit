@@ -4,8 +4,10 @@
 # Usage (PowerShell):
 #   irm https://raw.githubusercontent.com/Elnora-AI/elnora-starter-kit/main/install.ps1 | iex
 #
-# Downloads the starter kit zip (no git required), extracts it to
-# %USERPROFILE%\Documents\elnora-starter-kit, and runs setup-windows.ps1.
+# Prompts for a workspace name (used for BOTH the local folder name AND
+# the GitHub repo name created in Phase 2), downloads the starter kit zip
+# (no git required), extracts to %USERPROFILE%\Documents\<workspace-name>,
+# and runs setup-windows.ps1.
 # ============================================================
 
 $ErrorActionPreference = "Stop"
@@ -21,13 +23,87 @@ $ErrorActionPreference = "Stop"
 $RepoOwner = "Elnora-AI"
 $RepoName  = "elnora-starter-kit"
 $Branch    = "main"
-$TargetDir = Join-Path $env:USERPROFILE "Documents\$RepoName"
+
+# ---- Workspace name -------------------------------------------------------
+# This name is used for BOTH the local folder under Documents\ AND the
+# GitHub repo we create later in Phase 2. Locking them in lockstep up
+# front avoids a class of bugs where the local path and GitHub remote
+# drift out of sync.
+#
+# Resolution order:
+#   1. $env:ELNORA_WORKSPACE_NAME (CI / scripted runs).
+#   2. Interactive Read-Host prompt (irm | iex runs in the caller's
+#      session, so Read-Host reaches the real console).
+#   3. Fallback to "elnora-starter-kit" for non-interactive contexts
+#      with no env override.
+#
+# Validation enforces the project naming convention (see CLAUDE.md
+# > Naming Conventions): lowercase letters, digits, and dashes only.
+# No uppercase, no spaces, no underscores, no dots. Self-explaining
+# names with the user's name as a prefix are encouraged
+# (e.g. carmen-agents, carmen-vault, carmen-knowledge-base).
+#
+# Anchored on both ends with alphanumerics so we reject leading/trailing
+# dashes and dash-only inputs (`-foo`, `foo-`, `--`, `-`). A leading dash
+# would be parsed as a flag by `gh repo create` later; a folder named
+# `-rf` would be a particularly mean foot-gun. Single-char inputs
+# (`a`, `1`) are still allowed via the optional middle group.
+#
+# This is stricter than GitHub's own repo-name rule ([A-Za-z0-9._-]+),
+# so anything that passes here also passes `gh repo create`. Mirrors
+# install.sh's NAME_RE — cross-platform parity matters for the rule.
+$nameRegex = '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
+
+# Normalize $env:USERNAME for the default suggestion: lowercase + replace
+# whitespace runs with single dashes + strip illegal chars. Windows
+# accounts often have title-case names ("Carmen") or contain spaces
+# ("First Last") — the raw $env:USERNAME would fail the strict regex.
+# Mirrors install.sh's tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd 'a-z0-9-'.
+$userLower = ($env:USERNAME -as [string]).ToLowerInvariant() -replace '\s+', '-' -replace '[^a-z0-9-]', ''
+if ([string]::IsNullOrWhiteSpace($userLower)) { $userLower = 'me' }
+$defaultName = "$userLower-agents"
 
 Write-Host ""
 Write-Host "===========================================" -ForegroundColor Cyan
 Write-Host "  Elnora Starter Kit - Bootstrap" -ForegroundColor Cyan
 Write-Host "===========================================" -ForegroundColor Cyan
 Write-Host ""
+
+if (-not [string]::IsNullOrWhiteSpace($env:ELNORA_WORKSPACE_NAME)) {
+    $WorkspaceName = $env:ELNORA_WORKSPACE_NAME
+} elseif ([Environment]::UserInteractive -and $Host.UI.RawUI) {
+    Write-Host "Pick a name for your workspace. This becomes BOTH:"
+    Write-Host "  - the local folder under $env:USERPROFILE\Documents\"
+    Write-Host "  - the GitHub repo we'll create for you in Phase 2"
+    Write-Host ""
+    Write-Host "Naming rules (project convention):"
+    Write-Host "  - lowercase letters, digits, and dashes only"
+    Write-Host "  - no spaces, no underscores, no uppercase"
+    Write-Host "  - self-explaining: $userLower-agents, $userLower-vault,"
+    Write-Host "    $userLower-knowledge-base, $userLower-filesystem, etc."
+    Write-Host ""
+    while ($true) {
+        $reply = Read-Host -Prompt "Workspace name [$defaultName]"
+        if ([string]::IsNullOrWhiteSpace($reply)) { $reply = $defaultName }
+        if ($reply -match $nameRegex) {
+            $WorkspaceName = $reply
+            break
+        }
+        Write-Host "  [!] '$reply' isn't a legal name. Use lowercase letters, digits, and dashes only; must start and end with a letter or digit (no leading/trailing dash)." -ForegroundColor Yellow
+    }
+    Write-Host ""
+} else {
+    $WorkspaceName = "elnora-starter-kit"
+}
+
+if ($WorkspaceName -notmatch $nameRegex) {
+    Write-Host "[!] ELNORA_WORKSPACE_NAME='$WorkspaceName' violates the project naming convention." -ForegroundColor Red
+    Write-Host "    Allowed: lowercase letters, digits, and dashes; must start and end with a letter/digit (^[a-z0-9]([a-z0-9-]*[a-z0-9])?`$)." -ForegroundColor Red
+    throw "Invalid workspace name: $WorkspaceName"
+}
+
+$TargetDir = Join-Path $env:USERPROFILE "Documents\$WorkspaceName"
+
 Write-Host "This will:"
 Write-Host "  1. Download the starter kit to $TargetDir"
 Write-Host "  2. Run setup-windows.ps1 (installs Claude Code + dev tools)"
@@ -39,7 +115,25 @@ Write-Host ""
 # System tools (Claude, Node, Python, Obsidian) are NOT touched here:
 # setup-windows.ps1 detects existing installs and updates in place, so
 # re-running won't blow away a working toolchain.
+#
+# EXCEPTION: if the agent left a handoff resume marker
+# (.elnora-handoff-resume.json) in this folder, refuse to wipe. The marker
+# means a previous Phase 2 hit a GitHub-name collision and asked the user
+# to re-run setup-windows.ps1, NOT install.ps1. Wiping would silently drop
+# the resume state and the next agent session would start over instead of
+# picking up at step 6c.3. Tell the user the right command and bail.
 if (Test-Path $TargetDir) {
+    if (Test-Path (Join-Path $TargetDir ".elnora-handoff-resume.json")) {
+        Write-Host "[!] $TargetDir already contains an in-progress Phase 2 handoff" -ForegroundColor Red
+        Write-Host "    (.elnora-handoff-resume.json marker present)." -ForegroundColor Red
+        Write-Host ""
+        Write-Host "    Don't re-run install.ps1 -- it would erase the resume state." -ForegroundColor Red
+        Write-Host "    Instead, finish the handoff from the existing folder:" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "      cd `"$TargetDir`"; .\setup-windows.ps1" -ForegroundColor Red
+        Write-Host ""
+        throw "Refusing to wipe in-progress handoff at $TargetDir"
+    }
     Write-Host "Existing starter kit detected at $TargetDir" -ForegroundColor Gray
     Write-Host "Wiping for a fresh install (system tools like Claude, Node, Python are kept)..." -ForegroundColor Gray
     Remove-Item -Path $TargetDir -Recurse -Force

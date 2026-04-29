@@ -137,8 +137,15 @@ jobs:
         # kit into a separate dir without those files so the agent's working
         # tree matches what install.sh produces. Excludes match install.sh
         # exactly + .git/ (customers extract from a tarball, no git history).
+        #
+        # Stage into a folder NAMED for $ELNORA_HANDOFF_REPO_NAME (not the
+        # generic "kit"). This forces `basename "$PWD"` to equal the
+        # GitHub repo name the agent will create — the same
+        # local-folder == GitHub-repo invariant install.sh enforces for
+        # real users. The next step asserts the match so a regression
+        # that desyncs them in real use would fail CI.
         run: |
-          STAGED="${RUNNER_TEMP}/kit"
+          STAGED="${RUNNER_TEMP}/${ELNORA_HANDOFF_REPO_NAME}"
           rm -rf "$STAGED"
           mkdir -p "$STAGED"
           rsync -a \
@@ -149,6 +156,24 @@ jobs:
           echo "ELNORA_KIT_DIR=$STAGED" >> "$GITHUB_ENV"
           ls -la "$STAGED"
 
+      - name: Assert local folder name == GitHub repo name (sync invariant)
+        # The whole point of the workspace-name-sync feature is that the
+        # local folder and the GitHub repo share one name. Real users get
+        # this for free via install.sh's prompt. CI staged the kit at
+        # ${RUNNER_TEMP}/${ELNORA_HANDOFF_REPO_NAME}, so basename matches
+        # by construction — but assert it explicitly so a future change
+        # to the staging path that breaks the invariant fails loudly here
+        # rather than silently shipping a desync.
+        run: |
+          STAGED="${ELNORA_KIT_DIR:-${RUNNER_TEMP}/${ELNORA_HANDOFF_REPO_NAME}}"
+          actual="$(basename "$STAGED")"
+          if [ "$actual" != "$ELNORA_HANDOFF_REPO_NAME" ]; then
+            echo "::error::staging dir basename '$actual' != ELNORA_HANDOFF_REPO_NAME '$ELNORA_HANDOFF_REPO_NAME'"
+            echo "::error::workspace-name-sync invariant broken — local folder must equal GitHub repo name"
+            exit 1
+          fi
+          echo "  [OK] basename($STAGED) == \$ELNORA_HANDOFF_REPO_NAME ($actual)"
+
       - name: Write integrity marker (mirror install.sh)
         # install.sh writes .elnora-starter-kit-marker on fresh extract; the
         # setup script's headless mode now hard-refuses if the marker is
@@ -156,7 +181,7 @@ jobs:
         # workspace), so we have to mint the marker ourselves to match the
         # real customer code path.
         run: |
-          STAGED="${ELNORA_KIT_DIR:-${RUNNER_TEMP}/kit}"
+          STAGED="${ELNORA_KIT_DIR:-${RUNNER_TEMP}/${ELNORA_HANDOFF_REPO_NAME}}"
           sha=$(shasum -a 256 "$STAGED/INSTALL_FOR_AGENTS.md" | awk '{print $1}')
           {
             echo "version: 1"
@@ -174,7 +199,7 @@ jobs:
         # The agent's job becomes: verify this file exists + the path
         # resolves. See INSTALL_FOR_AGENTS.md "Step 8 (Knowledge base)".
         env:
-          KIT_DIR: ${{ runner.temp }}/kit
+          KIT_DIR: ${{ runner.temp }}/${{ env.ELNORA_HANDOFF_REPO_NAME }}
           VAULT_HOME: ${{ runner.temp }}
         run: |
           mkdir -p "$KIT_DIR/.claude"
@@ -195,7 +220,7 @@ jobs:
         # not produce it. Heredoc uses single-quoted PY tag so no shell
         # interpolation happens inside the python block.
         env:
-          KIT_DIR: ${{ runner.temp }}/kit
+          KIT_DIR: ${{ runner.temp }}/${{ env.ELNORA_HANDOFF_REPO_NAME }}
         run: |
           python3 - "$KIT_DIR/CLAUDE.md" <<'PY'
           import sys, pathlib
@@ -215,7 +240,7 @@ jobs:
           PY
 
       - name: Run setup-mac.sh in headless handoff mode
-        working-directory: ${{ runner.temp }}/kit
+        working-directory: ${{ runner.temp }}/${{ env.ELNORA_HANDOFF_REPO_NAME }}
         run: |
           chmod +x setup-mac.sh
           # The script will: install all tools, then enter headless handoff
@@ -401,9 +426,16 @@ jobs:
         # tests/ and .github/ before running setup-windows.ps1
         # (install.ps1:96-97). We mirror that here so the agent's CWD
         # matches what real customers see.
+        #
+        # Stage into a folder NAMED for $ELNORA_HANDOFF_REPO_NAME (not the
+        # generic "kit"). This forces basename of the staged dir to equal
+        # the GitHub repo name the agent will create — the same
+        # local-folder == GitHub-repo invariant install.ps1 enforces for
+        # real users. The next step asserts the match so a regression
+        # that desyncs them in real use would fail CI.
         shell: pwsh
         run: |
-          $staged = Join-Path $env:RUNNER_TEMP "kit"
+          $staged = Join-Path $env:RUNNER_TEMP $env:ELNORA_HANDOFF_REPO_NAME
           if (Test-Path $staged) { Remove-Item $staged -Recurse -Force }
           New-Item -ItemType Directory -Path $staged | Out-Null
           # Robocopy is the standard Windows mirror tool. /MIR mirrors the
@@ -418,6 +450,25 @@ jobs:
           "ELNORA_KIT_DIR=$staged" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Get-ChildItem $staged | Format-Table Name, Length
 
+      - name: Assert local folder name == GitHub repo name (sync invariant)
+        # See matching macOS step. The whole point of the workspace-name
+        # -sync feature is that the local folder and the GitHub repo share
+        # one name. Real users get this for free via install.ps1's prompt.
+        # CI staged the kit at $env:RUNNER_TEMP\$env:ELNORA_HANDOFF_REPO_NAME,
+        # so basename matches by construction — assert it explicitly so a
+        # future change to the staging path that breaks the invariant
+        # fails loudly here rather than silently shipping a desync.
+        shell: pwsh
+        run: |
+          $staged = if ($env:ELNORA_KIT_DIR) { $env:ELNORA_KIT_DIR } else { Join-Path $env:RUNNER_TEMP $env:ELNORA_HANDOFF_REPO_NAME }
+          $actual = Split-Path -Leaf $staged
+          if ($actual -ne $env:ELNORA_HANDOFF_REPO_NAME) {
+            Write-Host "::error::staging dir basename '$actual' != ELNORA_HANDOFF_REPO_NAME '$env:ELNORA_HANDOFF_REPO_NAME'"
+            Write-Host "::error::workspace-name-sync invariant broken — local folder must equal GitHub repo name"
+            exit 1
+          }
+          Write-Host "  [OK] basename($staged) == `$ELNORA_HANDOFF_REPO_NAME ($actual)"
+
       - name: Write integrity marker (mirror install.ps1)
         # install.ps1 writes .elnora-starter-kit-marker on fresh extract; the
         # setup script's headless mode now hard-refuses if the marker is
@@ -426,7 +477,7 @@ jobs:
         # real customer code path.
         shell: pwsh
         run: |
-          $staged = Join-Path $env:RUNNER_TEMP "kit"
+          $staged = Join-Path $env:RUNNER_TEMP $env:ELNORA_HANDOFF_REPO_NAME
           $docPath = Join-Path $staged "INSTALL_FOR_AGENTS.md"
           $hash = (Get-FileHash -Path $docPath -Algorithm SHA256).Hash.ToLowerInvariant()
           $now = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
@@ -443,7 +494,7 @@ jobs:
         # verify-only. See INSTALL_FOR_AGENTS.md "Step 8 (Knowledge base)".
         shell: pwsh
         run: |
-          $staged = Join-Path $env:RUNNER_TEMP "kit"
+          $staged = Join-Path $env:RUNNER_TEMP $env:ELNORA_HANDOFF_REPO_NAME
           $claudeDir = Join-Path $staged ".claude"
           New-Item -ItemType Directory -Force -Path $claudeDir | Out-Null
           # Use forward slashes in vault_path even on Windows — the kb
@@ -462,7 +513,7 @@ jobs:
         # not produce it.
         shell: pwsh
         run: |
-          $staged = Join-Path $env:RUNNER_TEMP "kit"
+          $staged = Join-Path $env:RUNNER_TEMP $env:ELNORA_HANDOFF_REPO_NAME
           $claudeMd = Join-Path $staged "CLAUDE.md"
           $lines = Get-Content -LiteralPath $claudeMd
           $startIdx = $null
@@ -487,7 +538,7 @@ jobs:
 
       - name: Run setup-windows.ps1 in headless handoff mode
         shell: pwsh
-        working-directory: ${{ runner.temp }}/kit
+        working-directory: ${{ runner.temp }}/${{ env.ELNORA_HANDOFF_REPO_NAME }}
         run: |
           Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
           .\setup-windows.ps1
