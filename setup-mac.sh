@@ -970,7 +970,7 @@ else
                 echo "  |                                                            |"
                 echo "  |   When you're ready:                                       |"
                 echo "  |                                                            |"
-                echo "  |     cd $kit_dir_display"
+                printf '  |     cd %-52s|\n' "$kit_dir_display"
                 echo "  |     bash setup-mac.sh                                      |"
                 echo "  |                                                            |"
                 echo "  |   Re-running is safe - installs are skipped if already     |"

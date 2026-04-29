@@ -37,12 +37,25 @@ $Branch    = "main"
 #   3. Fallback to "elnora-starter-kit" for non-interactive contexts
 #      with no env override.
 #
-# Validation matches the handoff doc's GitHub repo-name rule
-# ([A-Za-z0-9._-]+) so whatever the user picks here is also a legal
-# `gh repo create` argument.
-$nameRegex = '^[A-Za-z0-9._-]+$'
-$defaultName = "$env:USERNAME-agents"
-if ([string]::IsNullOrWhiteSpace($env:USERNAME)) { $defaultName = "me-agents" }
+# Validation enforces the project naming convention (see CLAUDE.md
+# > Naming Conventions): lowercase letters, digits, and dashes only.
+# No uppercase, no spaces, no underscores, no dots. Self-explaining
+# names with the user's name as a prefix are encouraged
+# (e.g. carmen-agents, carmen-vault, carmen-knowledge-base).
+#
+# This is stricter than GitHub's own repo-name rule ([A-Za-z0-9._-]+),
+# so anything that passes here also passes `gh repo create`. Mirrors
+# install.sh's NAME_RE — cross-platform parity matters for the rule.
+$nameRegex = '^[a-z0-9-]+$'
+
+# Normalize $env:USERNAME for the default suggestion: lowercase + replace
+# whitespace runs with single dashes + strip illegal chars. Windows
+# accounts often have title-case names ("Carmen") or contain spaces
+# ("First Last") — the raw $env:USERNAME would fail the strict regex.
+# Mirrors install.sh's tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd 'a-z0-9-'.
+$userLower = ($env:USERNAME -as [string]).ToLowerInvariant() -replace '\s+', '-' -replace '[^a-z0-9-]', ''
+if ([string]::IsNullOrWhiteSpace($userLower)) { $userLower = 'me' }
+$defaultName = "$userLower-agents"
 
 Write-Host ""
 Write-Host "===========================================" -ForegroundColor Cyan
@@ -57,7 +70,11 @@ if (-not [string]::IsNullOrWhiteSpace($env:ELNORA_WORKSPACE_NAME)) {
     Write-Host "  - the local folder under $env:USERPROFILE\Documents\"
     Write-Host "  - the GitHub repo we'll create for you in Phase 2"
     Write-Host ""
-    Write-Host "Letters, numbers, dots, dashes, and underscores only."
+    Write-Host "Naming rules (project convention):"
+    Write-Host "  - lowercase letters, digits, and dashes only"
+    Write-Host "  - no spaces, no underscores, no uppercase"
+    Write-Host "  - self-explaining: $userLower-agents, $userLower-vault,"
+    Write-Host "    $userLower-knowledge-base, $userLower-filesystem, etc."
     Write-Host ""
     while ($true) {
         $reply = Read-Host -Prompt "Workspace name [$defaultName]"
@@ -66,7 +83,7 @@ if (-not [string]::IsNullOrWhiteSpace($env:ELNORA_WORKSPACE_NAME)) {
             $WorkspaceName = $reply
             break
         }
-        Write-Host "  [!] '$reply' isn't a legal name. Try again." -ForegroundColor Yellow
+        Write-Host "  [!] '$reply' isn't a legal name. Use lowercase letters, digits, and dashes only." -ForegroundColor Yellow
     }
     Write-Host ""
 } else {
@@ -74,8 +91,8 @@ if (-not [string]::IsNullOrWhiteSpace($env:ELNORA_WORKSPACE_NAME)) {
 }
 
 if ($WorkspaceName -notmatch $nameRegex) {
-    Write-Host "[!] ELNORA_WORKSPACE_NAME='$WorkspaceName' is not a legal repo name." -ForegroundColor Red
-    Write-Host "    Allowed: letters, digits, dot, dash, underscore." -ForegroundColor Red
+    Write-Host "[!] ELNORA_WORKSPACE_NAME='$WorkspaceName' violates the project naming convention." -ForegroundColor Red
+    Write-Host "    Allowed: lowercase letters, digits, and dashes only (^[a-z0-9-]+`$)." -ForegroundColor Red
     throw "Invalid workspace name: $WorkspaceName"
 }
 

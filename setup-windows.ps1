@@ -1255,7 +1255,7 @@ if ($env:ELNORA_SKIP_HANDOFF -eq "1" -or $env:ELNORA_HANDOFF_MODE -eq "headless"
                     Write-Host "  |                                                            |"
                     Write-Host "  |   When you're ready:                                       |"
                     Write-Host "  |                                                            |"
-                    Write-Host "  |     cd $kitDirDisplay"
+                    Write-Host ("  |     cd {0,-52}|" -f $kitDirDisplay)
                     Write-Host "  |     .\setup-windows.ps1                                    |"
                     Write-Host "  |                                                            |"
                     Write-Host "  |   Re-running is safe - installs are skipped if already     |"

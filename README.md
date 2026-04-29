@@ -75,7 +75,7 @@ verification. Running it means trusting those sources.
 ## Repository layout
 
 ```
-elnora-starter-kit/
+<your-workspace>/                          # e.g. carmen-agents, set during install
 ├── README.md                              # This file
 ├── INSTALL_FOR_AGENTS.md                  # Phase 2 sequence executed by Claude
 ├── RECOVERY.md                            # Failure modes and remediation steps
