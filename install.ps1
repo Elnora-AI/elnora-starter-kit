@@ -122,6 +122,19 @@ Write-Host ""
 # to re-run setup-windows.ps1, NOT install.ps1. Wiping would silently drop
 # the resume state and the next agent session would start over instead of
 # picking up at step 6c.3. Tell the user the right command and bail.
+# Files inside $TargetDir that are USER DATA (not kit-shipped) and must
+# survive a re-run wipe. Customer-typed credentials and per-user config
+# live here; losing them on re-install is a regression. .elnora-handoff
+# -resume.json is also user-state but is handled separately above (we
+# refuse to wipe at all when that marker exists).
+$preservePaths = @(
+    ".env",
+    ".claude/knowledge-base.local.md",
+    ".claude/settings.local.json"
+)
+
+$preserveDir = $null
+
 if (Test-Path $TargetDir) {
     if (Test-Path (Join-Path $TargetDir ".elnora-handoff-resume.json")) {
         Write-Host "[!] $TargetDir already contains an in-progress Phase 2 handoff" -ForegroundColor Red
@@ -135,6 +148,27 @@ if (Test-Path $TargetDir) {
         throw "Refusing to wipe in-progress handoff at $TargetDir"
     }
     Write-Host "Existing starter kit detected at $TargetDir" -ForegroundColor Gray
+
+    # Preserve user-data files across the wipe. Stash them in a temp dir,
+    # then restore after re-extract. Cleaned up in the finally block.
+    $stash = Join-Path $env:TEMP ("elnora-preserve-" + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $stash -Force | Out-Null
+    $preservedCount = 0
+    foreach ($rel in $preservePaths) {
+        $src = Join-Path $TargetDir $rel
+        if (Test-Path -LiteralPath $src) {
+            $dst = Join-Path $stash $rel
+            New-Item -ItemType Directory -Path (Split-Path $dst -Parent) -Force | Out-Null
+            Copy-Item -LiteralPath $src -Destination $dst -Force
+            $preservedCount++
+            Write-Host "  Preserving $rel across wipe." -ForegroundColor Gray
+        }
+    }
+    if ($preservedCount -gt 0) {
+        $preserveDir = $stash
+    } else {
+        Remove-Item -Path $stash -Recurse -Force -ErrorAction SilentlyContinue
+    }
     Write-Host "Wiping for a fresh install (system tools like Claude, Node, Python are kept)..." -ForegroundColor Gray
     Remove-Item -Path $TargetDir -Recurse -Force
 }
@@ -170,6 +204,22 @@ try {
     New-Item -ItemType Directory -Path (Split-Path $TargetDir -Parent) -Force -ErrorAction SilentlyContinue | Out-Null
     Move-Item -Path $extracted -Destination $TargetDir -Force
     Write-Host "Extracted to $TargetDir" -ForegroundColor Green
+
+    # Restore any user-data files we stashed before the wipe. Has to
+    # happen AFTER the move so we're laying these on top of the freshly
+    # extracted zip contents (which carry the .gitignored templates,
+    # not the user's filled-in versions).
+    if ($preserveDir -and (Test-Path -LiteralPath $preserveDir)) {
+        foreach ($rel in $preservePaths) {
+            $src = Join-Path $preserveDir $rel
+            if (Test-Path -LiteralPath $src) {
+                $dst = Join-Path $TargetDir $rel
+                New-Item -ItemType Directory -Path (Split-Path $dst -Parent) -Force | Out-Null
+                Copy-Item -LiteralPath $src -Destination $dst -Force
+                Write-Host "  Restored $rel." -ForegroundColor Gray
+            }
+        }
+    }
 } catch {
     Write-Host "[!] Failed to download starter kit from $zipUrl" -ForegroundColor Red
     Write-Host "    Reason: $($_.Exception.Message)" -ForegroundColor Red
@@ -184,6 +234,9 @@ try {
 } finally {
     if (Test-Path $zipPath)       { Remove-Item $zipPath -Force -ErrorAction SilentlyContinue }
     if (Test-Path $tmpExtractDir) { Remove-Item $tmpExtractDir -Recurse -Force -ErrorAction SilentlyContinue }
+    if ($preserveDir -and (Test-Path -LiteralPath $preserveDir)) {
+        Remove-Item -Path $preserveDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 Set-Location $TargetDir

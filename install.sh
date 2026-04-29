@@ -116,6 +116,18 @@ echo ""
 # to re-run setup-mac.sh, NOT install.sh. Wiping would silently drop the
 # resume state and the next agent session would start over instead of
 # picking up at step 6c.3. Tell the user the right command and bail.
+# Files inside $TARGET_DIR that are USER DATA (not kit-shipped) and must
+# survive a re-run wipe. Customer-typed credentials and per-user config
+# live here; losing them on re-install is a regression. .elnora-handoff
+# -resume.json is also user-state but is handled separately above (we
+# refuse to wipe at all when that marker exists, since the user needs to
+# run setup-mac.sh, not install.sh).
+PRESERVE_PATHS=(
+    ".env"
+    ".claude/knowledge-base.local.md"
+    ".claude/settings.local.json"
+)
+
 if [ -d "$TARGET_DIR" ]; then
     if [ -f "$TARGET_DIR/.elnora-handoff-resume.json" ]; then
         echo "[!] $TARGET_DIR already contains an in-progress Phase 2 handoff" >&2
@@ -129,6 +141,24 @@ if [ -d "$TARGET_DIR" ]; then
         exit 1
     fi
     echo "Existing starter kit detected at $TARGET_DIR"
+    # Preserve user-data files across the wipe. Stash them in a temp dir
+    # keyed off TARGET_DIR, then restore after re-extract. The temp dir
+    # gets cleaned up on EXIT regardless of success/failure.
+    PRESERVE_DIR="$(mktemp -d)"
+    preserved_count=0
+    for rel in "${PRESERVE_PATHS[@]}"; do
+        if [ -e "$TARGET_DIR/$rel" ]; then
+            mkdir -p "$PRESERVE_DIR/$(dirname "$rel")"
+            cp -p "$TARGET_DIR/$rel" "$PRESERVE_DIR/$rel"
+            preserved_count=$((preserved_count + 1))
+            echo "  Preserving $rel across wipe."
+        fi
+    done
+    if [ "$preserved_count" -eq 0 ]; then
+        # Nothing user-customized to keep; clean up the empty stash dir.
+        rm -rf "$PRESERVE_DIR"
+        unset PRESERVE_DIR
+    fi
     echo "Wiping for a fresh install (system tools like Claude, Node, Python are kept)..."
     rm -rf "$TARGET_DIR"
 fi
@@ -136,7 +166,7 @@ fi
 echo "Downloading starter kit tarball..."
 TARBALL_URL="https://github.com/$REPO_OWNER/$REPO_NAME/archive/refs/heads/$BRANCH.tar.gz"
 TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+trap 'rm -rf "$TMP_DIR" "${PRESERVE_DIR:-/nonexistent-noop}"' EXIT
 
 if curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 30 --max-time 300 "$TARBALL_URL" | tar xz -C "$TMP_DIR"; then
     mkdir -p "$(dirname "$TARGET_DIR")"
@@ -154,6 +184,19 @@ if curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 30 --max-time 300 "$TA
     fi
     mv "$EXTRACTED" "$TARGET_DIR"
     echo "Extracted to $TARGET_DIR"
+    # Restore any user-data files we stashed before the wipe. Has to
+    # happen AFTER the mv so we're laying these on top of the freshly
+    # extracted tarball contents (which carry the .gitignored templates,
+    # not the user's filled-in versions).
+    if [ -n "${PRESERVE_DIR:-}" ] && [ -d "$PRESERVE_DIR" ]; then
+        for rel in "${PRESERVE_PATHS[@]}"; do
+            if [ -e "$PRESERVE_DIR/$rel" ]; then
+                mkdir -p "$TARGET_DIR/$(dirname "$rel")"
+                cp -p "$PRESERVE_DIR/$rel" "$TARGET_DIR/$rel"
+                echo "  Restored $rel."
+            fi
+        done
+    fi
 else
     echo "[!] Failed to download starter kit from $TARBALL_URL" >&2
     echo "    Check your internet connection and retry:" >&2

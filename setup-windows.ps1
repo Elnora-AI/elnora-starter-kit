@@ -709,20 +709,53 @@ if (-not $nodeMajorOk) {
             Write-Host "[3/9] Installing Node.js 22 LTS..." -ForegroundColor Green
         }
         # Pin to Node 22.x -- the `OpenJS.NodeJS.LTS` alias rolls forward
-        # and currently only has Node 24 manifests in the winget catalog,
-        # which left mac (`brew install node@22`) and Windows on different
-        # majors after the same installer. Use `OpenJS.NodeJS` (the
-        # major-tracked package) instead -- it carries every patchline of
-        # every major, so we can pin to a specific 22.x.y that matches
-        # what `node@22` resolves to on Homebrew.
+        # past 22 in winget's catalog, which left mac (`brew install
+        # node@22`) and Windows on different majors after the same
+        # installer. Use `OpenJS.NodeJS` (the major-tracked package)
+        # instead -- it carries every patchline of every major, so we
+        # can hold to 22.x.
         #
-        # Bump $nodeWinVersion in lockstep with whatever `brew info node@22`
-        # reports as the current bottle. As of this commit, both resolve
-        # to 22.22.2. When Node 22 ages out of LTS (April 2027) flip to
-        # the next LTS major and bump macOS's `node@22` -> `node@<new>`
-        # in the same change.
-        $nodeWinVersion = "22.22.2"
-        Invoke-Step "Node.js" { winget install --id OpenJS.NodeJS --version $nodeWinVersion --accept-package-agreements --accept-source-agreements --disable-interactivity --silent } -SuppressPattern $wingetNoisePattern
+        # winget catalog rolls specific patchline manifests off after a
+        # few months. Hardcoding `--version 22.22.2` worked once and
+        # then silently broke in CI when 22.22.2 aged out. Look up the
+        # latest 22.x currently in the catalog at install time so the
+        # script stays self-healing as Node 22 ages forward, with a
+        # safety net fallback to LTS if 22.x is gone entirely (Node 22
+        # ages out of LTS April 2027 -- by then mac side wants the
+        # next LTS major too).
+        $nodeWinPreferred = "22.22.2"
+        $nodeWinVersion = $nodeWinPreferred
+        Write-Host "  Resolving Node 22.x version from winget catalog..." -ForegroundColor Gray
+        $catalogRaw = winget show OpenJS.NodeJS --versions 2>$null
+        $catalogVersions = @()
+        if ($catalogRaw) {
+            $catalogVersions = $catalogRaw |
+                ForEach-Object { $_.Trim() } |
+                Where-Object { $_ -match '^\d+\.\d+\.\d+$' }
+        }
+        $latest22 = $catalogVersions |
+            Where-Object { $_ -like '22.*' } |
+            Sort-Object -Property { [Version]$_ } -Descending |
+            Select-Object -First 1
+        if ($latest22) {
+            # Prefer the canonical pin if it's still in the catalog (matches
+            # whatever brew resolves to on the mac side at this commit).
+            # Otherwise take the latest 22.x available so the install
+            # succeeds rather than failing on an aged-off pin.
+            if ($catalogVersions -contains $nodeWinPreferred) {
+                Write-Host "  Using canonical pin Node $nodeWinVersion (still in catalog)." -ForegroundColor Gray
+            } else {
+                $nodeWinVersion = $latest22
+                Write-Host "  Canonical pin $nodeWinPreferred no longer in catalog; using latest 22.x: $nodeWinVersion" -ForegroundColor Yellow
+            }
+            Invoke-Step "Node.js" { winget install --id OpenJS.NodeJS --version $nodeWinVersion --accept-package-agreements --accept-source-agreements --disable-interactivity --silent } -SuppressPattern $wingetNoisePattern
+        } else {
+            # No 22.x in catalog at all -- fall back to LTS alias. May
+            # install a different major; surface that loudly so a future
+            # operator notices the parity break.
+            Write-Host "  WARNING: no Node 22.x found in winget catalog; falling back to OpenJS.NodeJS.LTS alias (may install a different major)." -ForegroundColor Yellow
+            Invoke-Step "Node.js" { winget install --id OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements --disable-interactivity --silent } -SuppressPattern $wingetNoisePattern
+        }
         Update-SessionPath
     }
 } else {
