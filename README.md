@@ -87,7 +87,7 @@ verification. Running it means trusting those sources.
 ├── .env.template                          # ELNORA_API_KEY placeholder
 ├── .mcp.json                              # MCP server configuration
 ├── .gitignore
-├── LICENSE                                # MIT
+├── LICENSE                                # Apache-2.0
 ├── .claude/
 │   ├── settings.json                      # Plugins, permissions, env defaults
 │   └── knowledge-base.local.md.template   # Per-user knowledge-base config
@@ -153,4 +153,4 @@ a conversation.
 
 ## License
 
-MIT.
+Apache-2.0.
