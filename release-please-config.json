@@ -1,0 +1,15 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "bootstrap-sha": "a23c250ff300998fa8f2f71840e401a734204682",
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "package-name": "elnora-starter-kit",
+      "version-file": "VERSION",
+      "changelog-path": "CHANGELOG.md",
+      "include-component-in-tag": false,
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true
+    }
+  }
+}
