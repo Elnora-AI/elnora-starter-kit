@@ -40,7 +40,7 @@ You need two API keys. Paste them into GitHub repo secrets:
 
 | Secret name | Where to get it | Notes |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | https://console.anthropic.com/settings/keys | Set a low monthly budget cap on the key in the Anthropic console so a runaway test can't spike the bill (measured at ~$0.45-0.55 per OS on current Sonnet pricing — but cap the key anyway). |
+| `OPENROUTER_API_KEY` | Org secret (Elnora-AI → Settings → Secrets); keys at https://openrouter.ai/keys | Claude Code reaches OpenRouter through `ANTHROPIC_BASE_URL` with `openrouter/auto`; the workflow sets that up. Keep a low credit limit on the key so a runaway test can't spike the bill. |
 | `ELNORA_API_KEY_TEST` | https://platform.elnora.ai/settings → API Keys | Use a **dedicated test account**, not your personal one. Every run hits `elnora whoami` and `elnora doctor`. |
 
 **For local testing** (running the headless mode on your own Mac), paste

@@ -4,12 +4,12 @@ name: handoff-e2e
 # script, lets it `claude -p` into INSTALL_FOR_AGENTS.md (headless mode),
 # and asserts on disk that Claude actually completed Phase 2.
 #
-# Manual-only (workflow_dispatch). Uses real ANTHROPIC_API_KEY and a real
+# Manual-only (workflow_dispatch). Uses the real OPENROUTER_API_KEY and a real
 # ELNORA_API_KEY against the live Elnora API — costs LLM tokens per run.
 #
 # Required GitHub repository secrets:
-#   ANTHROPIC_API_KEY   - sk-ant-* key. Set a low monthly budget cap on it
-#                         in the Anthropic console so a runaway test can't
+#   OPENROUTER_API_KEY  - sk-or-* key (org secret). Set a low credit limit on it
+#                         in the OpenRouter console so a runaway test can't
 #                         spike the bill.
 #   ELNORA_API_KEY_TEST - elnora_live_* key. Recommend a dedicated test
 #                         account, not your personal one — every run will
@@ -57,7 +57,14 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 25
     env:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      # Claude Code runs through OpenRouter with automatic model routing. The
+      # setup scripts skip browser OAuth when ANTHROPIC_API_KEY is set, so that
+      # name carries the OpenRouter key too; there is no Anthropic key.
+      ANTHROPIC_BASE_URL: https://openrouter.ai/api
+      ANTHROPIC_AUTH_TOKEN: ${{ secrets.OPENROUTER_API_KEY }}
+      ANTHROPIC_MODEL: openrouter/auto
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: openrouter/auto
+      ANTHROPIC_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       ELNORA_API_KEY: ${{ secrets.ELNORA_API_KEY_TEST }}
       ELNORA_HANDOFF_MODE: headless
       # PAT used by Claude in step 6 of INSTALL_FOR_AGENTS.md (headless
@@ -92,7 +99,7 @@ jobs:
       - name: Verify required secrets are present
         run: |
           if [ -z "$ANTHROPIC_API_KEY" ]; then
-            echo "::error::ANTHROPIC_API_KEY secret is not set"
+            echo "::error::OPENROUTER_API_KEY secret is not set"
             exit 1
           fi
           if [ -z "$ELNORA_API_KEY" ]; then
@@ -105,8 +112,8 @@ jobs:
           fi
           # Quick sanity check on the secret shapes — catches a swapped paste.
           case "$ANTHROPIC_API_KEY" in
-            sk-ant-*) echo "ANTHROPIC_API_KEY shape OK" ;;
-            *) echo "::error::ANTHROPIC_API_KEY does not start with sk-ant-"; exit 1 ;;
+            sk-or-*) echo "OPENROUTER_API_KEY shape OK" ;;
+            *) echo "::error::OPENROUTER_API_KEY does not start with sk-or-"; exit 1 ;;
           esac
           case "$ELNORA_API_KEY" in
             elnora_live_*) echo "ELNORA_API_KEY shape OK" ;;
@@ -268,6 +275,7 @@ jobs:
           s = p.read_text()
           before = len(s)
           s = re.sub(r'sk-ant-[A-Za-z0-9_\-]+',          'sk-ant-***REDACTED***',     s)
+          s = re.sub(r'sk-or-[A-Za-z0-9_\-]+',           'sk-or-***REDACTED***',      s)
           s = re.sub(r'elnora_live_[A-Za-z0-9_\-]+',      'elnora_live_***REDACTED***', s)
           s = re.sub(r'gh[pousr]_[A-Za-z0-9_]{20,}',      'ghX_***REDACTED***',         s)
           s = re.sub(r'github_pat_[A-Za-z0-9_]{20,}',     'github_pat_***REDACTED***',  s)
@@ -358,7 +366,14 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 25
     env:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      # Claude Code runs through OpenRouter with automatic model routing. The
+      # setup scripts skip browser OAuth when ANTHROPIC_API_KEY is set, so that
+      # name carries the OpenRouter key too; there is no Anthropic key.
+      ANTHROPIC_BASE_URL: https://openrouter.ai/api
+      ANTHROPIC_AUTH_TOKEN: ${{ secrets.OPENROUTER_API_KEY }}
+      ANTHROPIC_MODEL: openrouter/auto
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: openrouter/auto
+      ANTHROPIC_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       ELNORA_API_KEY: ${{ secrets.ELNORA_API_KEY_TEST }}
       ELNORA_HANDOFF_MODE: headless
       # See macOS job for why this exists and why it's NOT named GH_TOKEN.
@@ -382,7 +397,7 @@ jobs:
         shell: pwsh
         run: |
           if (-not $env:ANTHROPIC_API_KEY) {
-            Write-Host "::error::ANTHROPIC_API_KEY secret is not set"
+            Write-Host "::error::OPENROUTER_API_KEY secret is not set"
             exit 1
           }
           if (-not $env:ELNORA_API_KEY) {
@@ -393,8 +408,8 @@ jobs:
             Write-Host "::error::PAT_TOKEN_TEST secret is not set"
             exit 1
           }
-          if ($env:ANTHROPIC_API_KEY -notlike "sk-ant-*") {
-            Write-Host "::error::ANTHROPIC_API_KEY does not start with sk-ant-"
+          if ($env:ANTHROPIC_API_KEY -notlike "sk-or-*") {
+            Write-Host "::error::OPENROUTER_API_KEY does not start with sk-or-"
             exit 1
           }
           if ($env:ELNORA_API_KEY -notlike "elnora_live_*") {
@@ -555,6 +570,7 @@ jobs:
           $s = Get-Content $env:ELNORA_HANDOFF_TRANSCRIPT -Raw
           $before = $s.Length
           $s = [regex]::Replace($s, 'sk-ant-[A-Za-z0-9_\-]+',          'sk-ant-***REDACTED***')
+          $s = [regex]::Replace($s, 'sk-or-[A-Za-z0-9_\-]+',           'sk-or-***REDACTED***')
           $s = [regex]::Replace($s, 'elnora_live_[A-Za-z0-9_\-]+',      'elnora_live_***REDACTED***')
           $s = [regex]::Replace($s, 'gh[pousr]_[A-Za-z0-9_]{20,}',      'ghX_***REDACTED***')
           $s = [regex]::Replace($s, 'github_pat_[A-Za-z0-9_]{20,}',     'github_pat_***REDACTED***')
